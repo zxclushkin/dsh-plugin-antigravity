@@ -135,7 +135,7 @@ clickable sources.
 ## Tests
 
 ```powershell
-node test/unit.mjs     # offline, 42 checks (includes the GUI routes, durable store, credentials)
+node test/unit.mjs     # offline, 43 checks (includes the GUI routes, durable store, credentials, client activation)
 node test/live.mjs     # live default, 16 checks; needs Antigravity installed and spends quota
 $env:AG_MATRIX_TEST = '1'; node test/live.mjs   # + model matrix, 25 checks
 $env:AG_IMAGE_TEST = '1'; node test/live.mjs    # + image generation/editing

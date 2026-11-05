@@ -38,7 +38,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 
 | Check | Result |
 |---|---|
-| Offline unit checks (translation, chunk protocol, metadata, errors, throttle, search, image reference, durable store, credentials, GUI routes) | **42/42** |
+| Offline unit checks (translation, chunk protocol, metadata, errors, throttle, search, image reference, durable store, credentials, GUI routes, client activation) | **43/43** |
 | Live adapter checks against the real API (default suite) | **16/16** |
 | Live model matrix (`AG_MATRIX_TEST=1`) | **25/25** (Gemini/Claude/GPT-OSS turns, tools, reasoning, grounded search, one image edit) |
 | Live full run (`AG_MATRIX_TEST=1` + `AG_IMAGE_TEST=1`) | **26/26, 1 skip (quota)** — an image check hit the account's 4-hour image quota mid-run and was reported as SKIP, not FAIL |
@@ -363,7 +363,7 @@ web server on `127.0.0.1` and is not exposed elsewhere.
 
 ```powershell
 cd plugin
-node test/unit.mjs          # offline: 42 checks, no network, no Antigravity
+node test/unit.mjs          # offline: 43 checks, no network, no Antigravity
 node test/live.mjs          # live default: 16 checks against the real API (spends the account quota)
 $env:AG_MATRIX_TEST = '1'; node test/live.mjs                          # + model matrix: 25 checks
 $env:AG_IMAGE_TEST = '1'; node test/live.mjs                           # + image generation/editing

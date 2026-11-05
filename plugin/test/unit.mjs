@@ -682,6 +682,59 @@ await checkAsync('client bundle registers the settings section', async () => {
   assert.equal(typeof registration.component, 'function');
 });
 
+await checkAsync('client bundle survives a Cordis-strict context and duplicate locales', async () => {
+  const source = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  let definition = null;
+  new Function('window', source)({ __ModuleLoader__: { load(value) { definition = value; } } });
+  const moduleExports = definition.factory(() => ({
+    createElement: () => null, useState: (value) => [value, () => {}], useEffect: () => {}, useCallback: (fn) => fn,
+  }));
+
+  // Cordis throws 'cannot get property "locale" without inject' for a non-injected service:
+  // the plugin must use ctx.get('locale'), and must still register its section.
+  let localeRegistrations = 0;
+  const strictContext = {
+    slots: { inject(_slot, callback) { callback(); }, register() { return () => {}; } },
+    effect(fn) { return fn(); },
+    get(name) {
+      if (name !== 'locale') return undefined;
+      return {
+        register(ns, dicts) {
+          assert.equal(ns, 'antigravity');
+          assert.deepEqual(Object.keys(dicts).sort(), ['en', 'ru', 'zh']);
+          localeRegistrations += 1;
+          return () => {};
+        },
+        bind() { return (key) => key; },
+      };
+    },
+  };
+  Object.defineProperty(strictContext, 'locale', {
+    get() { throw new Error('cannot get property "locale" without inject'); },
+  });
+  assert.doesNotThrow(() => moduleExports.apply(strictContext));
+  assert.equal(localeRegistrations, 1, 'locale dictionaries register once through ctx.get');
+
+  // A second activation (duplicate locale namespace, or a clashing slot) must not throw:
+  // an activation failure aborts the whole web boot.
+  let sectionRegistrations = 0;
+  const duplicateContext = {
+    slots: {
+      inject(_slot, callback) { callback(); },
+      register() { sectionRegistrations += 1; return () => {}; },
+    },
+    effect(fn) { return fn(); },
+    get() {
+      return {
+        register() { throw new Error('locale namespace "antigravity" already has locale "en"'); },
+        bind() { return (key) => key; },
+      };
+    },
+  };
+  assert.doesNotThrow(() => moduleExports.apply(duplicateContext));
+  assert.equal(sectionRegistrations, 1, 'the settings section still registers');
+});
+
 await checkAsync('image model ignores agent tools and keeps an image-sized output budget', async () => {
   const options = {
     provider: 'antigravity',

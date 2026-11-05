@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.1 — hotfix: the localized settings page no longer aborts web boot
+
+- **Crash fix.** The 0.6.0 client half read the locale service as `ctx.locale` while only
+  `inject: ['slots']` was declared. Cordis throws `cannot get property "locale" without inject`
+  for a non-injected service, so the client plugin's `apply()` threw, the entry failed, and the
+  desktop app reported `web boot: 1 entry did not activate` and refused to start. The client now
+  reads the service with `ctx.get('locale')` (documented Cordis accessor that does not require
+  injection), and every activation step — locale registration, `ctx.effect`, the settings-section
+  registration — is individually wrapped so no failure can take down the web boot. A duplicate
+  locale namespace (second activation) is logged and ignored instead.
+- **Regression test** simulates the Cordis-strict context (property access throws, `ctx.get`
+  works) plus a duplicate-namespace service and asserts that `apply()` never throws and the
+  settings section still registers. Offline suite: 43 checks.
+- Desktop note: after the crash the app had reduced the profile patch to a minimal one; the full
+  composition (the managed antigravity block plus the godot/remotion/gigachat/skill rows) was
+  restored from the last good backup and the mount normalised to the package name.
+
 ## 0.6.0 — localized settings page, durable images, cross-platform credentials
 
 The GUI now speaks the operator's language, generated images land in the harness attachment

@@ -633,18 +633,35 @@ function Toggle(props) {
     return {
       inject: ['slots'],
       apply(ctx) {
-        // The locale service is optional: a composition without it keeps the
-        // English fallback translator, and apply() must not throw there.
-        if (ctx.locale && typeof ctx.locale.register === 'function') {
-          ctx.effect(() => ctx.locale.register(NS, LOCALE));
-          t = ctx.locale.bind(NS);
+        // Optional services are read with ctx.get(), never as ctx.<name>: Cordis throws
+        // 'cannot get property "<name>" without inject' for a non-injected service, and a
+        // throw here fails the whole web boot ("entry did not activate"). Every step below is
+        // also individually defensive for the same reason.
+        try {
+          const locale = typeof ctx.get === 'function' ? ctx.get('locale') : undefined;
+          if (locale && typeof locale.register === 'function') {
+            try {
+              // A composition without ctx.effect (or a second activation) must not fail boot.
+              if (typeof ctx.effect === 'function') ctx.effect(() => locale.register(NS, LOCALE));
+              else locale.register(NS, LOCALE);
+            } catch (error) {
+              try { console.error('antigravity: locale registration skipped', error); } catch { /* no console */ }
+            }
+            try { t = locale.bind(NS); } catch { /* keep the English fallback */ }
+          }
+        } catch (error) {
+          try { console.error('antigravity: locale service unavailable', error); } catch { /* no console */ }
         }
-        ctx.slots.inject('settings.section', () => ctx.slots.register({
-          name: 'settings.section',
-          id: 'antigravity',
-          order: 30,
-          label: 'Antigravity',
-        }, AntigravitySettings));
+        try {
+          ctx.slots.inject('settings.section', () => ctx.slots.register({
+            name: 'settings.section',
+            id: 'antigravity',
+            order: 30,
+            label: 'Antigravity',
+          }, AntigravitySettings));
+        } catch (error) {
+          try { console.error('antigravity: settings section registration failed', error); } catch { /* no console */ }
+        }
       },
     };
   },
