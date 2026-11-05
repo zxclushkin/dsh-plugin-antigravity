@@ -41,7 +41,8 @@ API — see [`vscode/`](vscode/README.md). Each
 installing needs neither a clone nor a build:
 
 ```powershell
-gh release download --repo zxclushkin/dsh-plugin-antigravity `
+# replace the tag with the newest vscode-v* release
+gh release download vscode-v0.1.0 --repo zxclushkin/dsh-plugin-antigravity `
   --pattern antigravity-chat.vsix --dir "$env:TEMP\antigravity-chat"
 code --install-extension "$env:TEMP\antigravity-chat\antigravity-chat.vsix" --force
 ```

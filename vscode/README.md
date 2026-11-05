@@ -59,15 +59,18 @@ so installing from GitHub needs no clone, no build and no account.
 **From the release (recommended)**
 
 ```powershell
-# GitHub CLI: downloads the VSIX from the latest release
-gh release download --repo zxclushkin/dsh-plugin-antigravity `
+# GitHub CLI: replace the tag with the newest vscode-v* release from the Releases page
+gh release download vscode-v0.1.0 --repo zxclushkin/dsh-plugin-antigravity `
   --pattern antigravity-chat.vsix --dir "$env:TEMP\antigravity-chat"
 
 code --install-extension "$env:TEMP\antigravity-chat\antigravity-chat.vsix" --force
 ```
 
-Or open the [Releases page](https://github.com/zxclushkin/dsh-plugin-antigravity/releases),
-download `antigravity-chat.vsix`, then in VS Code: **Extensions → ⋯ → Install from VSIX…**.
+The tag is explicit on purpose: DSH-plugin releases use the same Releases feed, so "latest"
+is not necessarily the extension. Or open the
+[Releases page](https://github.com/zxclushkin/dsh-plugin-antigravity/releases), download
+`antigravity-chat.vsix` from the `vscode-v*` release, then in VS Code:
+**Extensions → ⋯ → Install from VSIX…**.
 
 **From source**
 
