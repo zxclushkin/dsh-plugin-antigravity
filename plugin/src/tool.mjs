@@ -62,6 +62,7 @@ export function imageToolDefinition({ generator, config, log }) {
                 path: { type: 'string' },
                 mime_type: { type: 'string' },
                 bytes: { type: 'integer' },
+                attachment_id: { type: 'string' },
               },
               required: ['path'],
             },
@@ -100,6 +101,7 @@ export function imageToolDefinition({ generator, config, log }) {
           path: image.path,
           mime_type: image.mimeType,
           bytes: image.bytes,
+          ...(image.attachmentId ? { attachment_id: image.attachmentId } : {}),
         })),
         ...(result.text ? { text: result.text } : {}),
       };

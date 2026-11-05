@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-antigravity",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Google Antigravity model provider for DeepSeek Harness: a native LLM adapter, a built-in image_generate tool and a settings GUI with account limits.",
   "type": "module",
   "main": "index.mjs",

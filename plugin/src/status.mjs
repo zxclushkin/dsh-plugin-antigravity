@@ -137,6 +137,7 @@ const EDITABLE_FEATURES = {
   includeThoughts: 'boolean',
   imageGen: 'boolean',
   imageOutput: 'boolean',
+  durableImages: 'boolean',
   defaultThinkingLevel: 'string',
   imageAspectRatio: 'string',
 };

@@ -32,6 +32,11 @@ const SCRATCH_HOME = path.join(WORK, 'dshhome');
 
 const APPLY = process.argv.includes('--apply');
 const PRISTINE = process.argv.includes('--pristine');
+// --package mounts by package name instead of absolute path; it requires the plugin to be
+// installed into the profile first (`dsh plugin --profile <p> add link:<repo>/plugin`) and is
+// what makes DSH watch the linked sources for live reload.
+const PACKAGE_MODE = process.argv.includes('--package');
+const PACKAGE_NAME = 'dsh-plugin-antigravity';
 
 const MARK_BEGIN = '# >>> dsh-plugin-antigravity (managed block, delete to uninstall)';
 const MARK_END = '# <<< dsh-plugin-antigravity';
@@ -42,10 +47,12 @@ const INSERT_BLOCK = [
   '',
   MARK_BEGIN,
   '# Native LLM adapter for the models of the installed Google Antigravity app.',
-  '# Mounted by absolute path on purpose: no package install and no pnpm run in the profile.',
+  PACKAGE_MODE
+    ? '# Mounted by package name from the profile link: DSH reloads the linked sources on change.'
+    : '# Mounted by absolute path on purpose: no package install and no pnpm run in the profile.',
   '- insert:',
   '    - id: antigravity-llm',
-  '      name: ' + JSON.stringify(PLUGIN_ENTRY),
+  '      name: ' + JSON.stringify(PACKAGE_MODE ? PACKAGE_NAME : PLUGIN_ENTRY),
   '      config:',
   '        enabled: true',
   '        debugDir: ' + JSON.stringify(path.join(REPO, 'logs').replace(/\\/g, '/')),
@@ -115,7 +122,8 @@ function validateWithDsh(patchText) {
   });
   const output = String(result.stdout || '') + String(result.stderr || '') +
     (result.error ? '\nspawn error: ' + result.error.message : '');
-  const ok = result.status === 0 && /id: antigravity-llm/.test(output) && /plugin\/index\.mjs/.test(output);
+  const mountOk = PACKAGE_MODE ? /name: dsh-plugin-antigravity/.test(output) : /plugin\/index\.mjs/.test(output);
+  const ok = result.status === 0 && /id: antigravity-llm/.test(output) && mountOk;
   return { ok, status: result.status, output };
 }
 

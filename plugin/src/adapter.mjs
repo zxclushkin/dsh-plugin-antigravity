@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AntigravityError, ERROR_CODES, httpError, transportError, abortedError } from './errors.mjs';
-import { imageMarkdown } from './imagegen.mjs';
+import { imageMarkdown, persistGeneratedImage } from './imagegen.mjs';
 import {
   buildGenerateRequest, citationText, encodeToolCallId, groundingText, mapFinishReason, mapUsage,
   reasoningEffortsFor,
@@ -352,21 +352,28 @@ export class AntigravityAdapter {
     }
   }
 
-  /** Persist one generated image/audio part and return its absolute path. */
+  /**
+   * Persist one generated image/audio part. Images go to the harness durable attachment store
+   * first (`features.durableImages`, default on) and fall back to the media directory; the
+   * returned path is what the assistant message links to.
+   */
   async persistMedia(part, signal) {
     const inline = part && (part.inlineData || part.fileData);
     if (!inline) return null;
     if (!inline.data) return null;
     const mimeType = String(inline.mimeType || 'image/jpeg');
-    const extension = mimeType.split('/')[1]?.split(';')[0] || 'bin';
     const kind = mimeType.startsWith('image/') ? 'image' : mimeType.startsWith('audio/') ? 'audio' : 'media';
-    const dir = this.mediaDir;
+    if (signal && signal.aborted) return null;
     try {
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, 'ag-' + crypto.randomBytes(8).toString('hex') + '.' + extension);
-      fs.writeFileSync(file, Buffer.from(inline.data, 'base64'));
+      const saved = await persistGeneratedImage({
+        attachments: this.features.durableImages === false ? undefined : this.getAttachments,
+        data: inline.data,
+        mimeType,
+        mediaDir: this.mediaDir,
+        log: this.log,
+      });
       if (signal && signal.aborted) return null;
-      return { file, kind };
+      return { file: saved.file, kind, durable: saved.durable, attachmentId: saved.attachmentId };
     } catch (error) {
       this.log('could not save generated media: ' + error.message);
       return null;

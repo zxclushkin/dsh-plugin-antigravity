@@ -15,6 +15,47 @@ import { AntigravityError, ERROR_CODES, httpError, transportError } from './erro
 export const DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-image';
 export const DEFAULT_ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 
+/**
+ * Persist one generated image.
+ *
+ * Preferred: the harness durable attachment store, so the image survives the media directory
+ * being cleaned and gets a content-addressed identity; the returned path is the store's
+ * read-only host path, which the chat UI renders through `api/file`. Fallback: the configured
+ * media directory (plain file).
+ *
+ * @returns {Promise<{file: string, mimeType: string, bytes: number, attachmentId?: string, durable: boolean}>}
+ */
+export async function persistGeneratedImage({ attachments, data, mimeType, mediaDir, log }) {
+  const attach = typeof attachments === 'function' ? attachments() : attachments;
+  if (attach && typeof attach.saveImages === 'function') {
+    try {
+      // AttachmentStore.saveImages takes encoded bytes as a Uint8Array, not base64 text.
+      const bytes = new Uint8Array(Buffer.from(String(data || ''), 'base64'));
+      const refs = await attach.saveImages([{ data: bytes, mediaType: mimeType }]);
+      const ref = refs && refs[0];
+      const hostPath = ref && typeof attach.imageHostPath === 'function' ? attach.imageHostPath(ref) : undefined;
+      if (ref && hostPath) {
+        return {
+          file: hostPath,
+          mimeType: ref.mediaType || mimeType,
+          bytes: Number(ref.bytes) || bytes.length,
+          attachmentId: ref.attachmentId ? String(ref.attachmentId) : undefined,
+          durable: true,
+        };
+      }
+    } catch (error) {
+      if (log) log('attachment store rejected the image, falling back to the media directory: ' + error.message);
+    }
+  }
+  const extension = String(mimeType).split('/')[1]?.split(';')[0] || 'jpeg';
+  const dir = mediaDir || path.join(os.tmpdir(), 'dsh-antigravity-media');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'ag-' + crypto.randomBytes(8).toString('hex') + '.' + extension);
+  const bytes = Buffer.from(data, 'base64');
+  fs.writeFileSync(file, bytes);
+  return { file, mimeType, bytes: bytes.length, durable: false };
+}
+
 /** Resolve the image model id this account advertises (falls back to the known id). */
 export async function resolveImageModel(adapter, features) {
   if (features.imageModel) return features.imageModel;
@@ -30,7 +71,7 @@ export async function resolveImageModel(adapter, features) {
  * Create the image generator: one call = one image (candidateCount > 1 is rejected by the
  * endpoint, so `count` is implemented as sequential calls).
  */
-export function createImageGenerator({ client, adapter, config, log, throttle }) {
+export function createImageGenerator({ client, adapter, config, log, throttle, getAttachments }) {
   const features = config.features || {};
   const mediaDir = features.mediaOutputDir || path.join(os.tmpdir(), 'dsh-antigravity-media');
   const aspectRatios = features.imageAspectRatios || DEFAULT_ASPECT_RATIOS;
@@ -109,12 +150,23 @@ export function createImageGenerator({ client, adapter, config, log, throttle })
         ERROR_CODES.EMPTY_RESPONSE,
       );
     }
-    const extension = image.mimeType.split('/')[1]?.split(';')[0] || 'jpeg';
-    const file = path.join(mediaDir, 'ag-' + crypto.randomBytes(8).toString('hex') + '.' + extension);
-    fs.mkdirSync(mediaDir, { recursive: true });
-    fs.writeFileSync(file, Buffer.from(image.data, 'base64'));
-    log('generated ' + image.mimeType + ' ' + file + ' (' + fs.statSync(file).size + ' bytes)');
-    return { file, mimeType: image.mimeType, bytes: fs.statSync(file).size, text: text.trim() };
+    const saved = await persistGeneratedImage({
+      attachments: getAttachments,
+      data: image.data,
+      mimeType: image.mimeType,
+      mediaDir,
+      log,
+    });
+    log('generated ' + saved.mimeType + ' ' + saved.file + ' (' + saved.bytes + ' bytes' +
+      (saved.durable ? ', durable attachment' : '') + ')');
+    return {
+      file: saved.file,
+      mimeType: saved.mimeType,
+      bytes: saved.bytes,
+      attachmentId: saved.attachmentId,
+      durable: saved.durable,
+      text: text.trim(),
+    };
   }
 
   return {
@@ -135,7 +187,14 @@ export function createImageGenerator({ client, adapter, config, log, throttle })
       for (let index = 0; index < total; index++) {
         if (signal && signal.aborted) throw new AntigravityError('image generation aborted', ERROR_CODES.ABORTED);
         const result = await generateOne({ prompt: text, aspectRatio: ratio, model, signal, reference });
-        images.push({ path: result.file, mimeType: result.mimeType, bytes: result.bytes, aspectRatio: ratio });
+        images.push({
+          path: result.file,
+          mimeType: result.mimeType,
+          bytes: result.bytes,
+          aspectRatio: ratio,
+          durable: result.durable,
+          ...(result.attachmentId ? { attachmentId: result.attachmentId } : {}),
+        });
         if (result.text) notes.push(result.text);
       }
       return { images, text: notes.join('\n').trim(), model };

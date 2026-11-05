@@ -11,6 +11,7 @@ import {
   decodeToolCallId, encodeToolCallId, groundingText, mapFinishReason, mapUsage,
 } from '../src/gemini.mjs';
 import { AntigravityError, httpError, transportError } from '../src/errors.mjs';
+import { credentialCommandFor, parseCredentialBlob } from '../src/antigravity.mjs';
 import { createImageGenerator, imageMarkdown } from '../src/imagegen.mjs';
 import { createSearchTool, groundedSearch, SEARCH_TOOL_NAME } from '../src/search.mjs';
 import { createStatusRoutes, createStatusService } from '../src/status.mjs';
@@ -882,6 +883,82 @@ await checkAsync('test-search route returns answer and sources', async () => {
   const unavailable = mockResponse();
   await bare.handler(mockPost('/antigravity/test-search', { query: 'x' }), unavailable);
   assert.equal(unavailable.status, 501);
+});
+
+/* ------------------------------------------------- durable images / credentials */
+
+function imageClient() {
+  return {
+    async openStream() { return { ok: true, status: 200, body: {} }; },
+    async *streamEvents() {
+      const png = Buffer.from('durable-bytes').toString('base64');
+      yield { type: 'media', part: { inlineData: { mimeType: 'image/png', data: png } } };
+      yield { type: 'candidate', candidate: { finishReason: 'STOP' } };
+    },
+  };
+}
+
+await checkAsync('generated images go to the durable attachment store when available', async () => {
+  const saved = [];
+  const attachments = {
+    async saveImages(inputs) {
+      saved.push(inputs);
+      return [{ attachmentId: 'sha256:abc123', mediaType: 'image/png', bytes: 12, width: 1, height: 1 }];
+    },
+    imageHostPath: () => 'C:/Users/me/.dsh/attachments/v1/objects/ab/abc123',
+  };
+  const generator = createImageGenerator({
+    client: imageClient(),
+    adapter: { loadCatalogue: async () => ({ imageModels: { 'gemini-3.1-flash-image': {} } }) },
+    config: { features: { mediaOutputDir: 'C:/lab/antigravity/.tmp/test-imagegen' } },
+    log: () => {},
+    getAttachments: () => attachments,
+  });
+  const result = await generator.generate({ prompt: 'a cat' });
+  assert.equal(result.images.length, 1);
+  assert.equal(result.images[0].path, 'C:/Users/me/.dsh/attachments/v1/objects/ab/abc123');
+  assert.equal(result.images[0].attachmentId, 'sha256:abc123');
+  assert.equal(result.images[0].durable, true);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0][0].mediaType, 'image/png');
+  // AttachmentStore.saveImages takes encoded bytes as a Uint8Array, not base64 text.
+  assert.ok(saved[0][0].data instanceof Uint8Array);
+  assert.equal(Buffer.from(saved[0][0].data).toString('utf8'), 'durable-bytes');
+});
+
+await checkAsync('attachment-store failures fall back to the media directory', async () => {
+  const generator = createImageGenerator({
+    client: imageClient(),
+    adapter: { loadCatalogue: async () => ({ imageModels: { 'gemini-3.1-flash-image': {} } }) },
+    config: { features: { mediaOutputDir: 'C:/lab/antigravity/.tmp/test-imagegen' } },
+    log: () => {},
+    getAttachments: () => ({ saveImages: async () => { throw new Error('store offline'); } }),
+  });
+  const result = await generator.generate({ prompt: 'a cat' });
+  assert.equal(result.images[0].durable, false);
+  assert.equal(result.images[0].attachmentId, undefined);
+  assert.ok(result.images[0].path.replace(/\\/g, '/').includes('.tmp/test-imagegen'));
+  assert.ok(fs.existsSync(result.images[0].path));
+});
+
+check('credential helpers cover every platform', () => {
+  const blob = parseCredentialBlob(JSON.stringify({ token: { access_token: 'a', refresh_token: 'r', expiry: '2030-01-01T00:00:00Z' } }));
+  assert.equal(blob.token.refresh_token, 'r');
+  assert.deepEqual(parseCredentialBlob('{"access_token":"x"}'), { token: { access_token: 'x' } });
+  assert.throws(() => parseCredentialBlob(''), /empty credential blob/);
+  assert.throws(() => parseCredentialBlob('not json'), /not JSON/);
+  assert.deepEqual(credentialCommandFor('darwin', 'gemini:antigravity'),
+    { command: 'security', args: ['find-generic-password', '-s', 'gemini:antigravity', '-w'] });
+  assert.deepEqual(credentialCommandFor('linux', 'gemini:antigravity'),
+    { command: 'secret-tool', args: ['lookup', 'service', 'gemini:antigravity'] });
+  assert.equal(credentialCommandFor('win32', 'gemini:antigravity'), null);
+});
+
+check('throttle defaults are human-shaped', () => {
+  const { value } = Config['~standard'].validate({});
+  assert.equal(value.maxConcurrentRequests, 2);
+  assert.equal(value.minRequestIntervalMs, 500);
+  assert.equal(value.rateLimitCooldownMs, 60_000);
 });
 
 console.log('\n' + passed + ' checks passed');

@@ -73,21 +73,64 @@ if ($null -eq $b) { exit 2 }
 [Console]::Out.Write([System.Text.Encoding]::UTF8.GetString($b))
 `;
 
-/** Read and parse the Antigravity credential blob. Returns {token: {access_token, refresh_token, expiry}}. */
-export function readKeyringCredential(target = DEFAULT_CREDENTIAL_TARGET) {
-  if (process.platform !== 'win32') throw new Error('Credential Manager is only available on Windows');
-  const script = PS_CREDREAD.replace('__TARGET__', String(target).replace(/'/g, "''"));
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    encoding: 'utf8', maxBuffer: 1 << 20, windowsHide: true, timeout: 30_000,
-  });
-  if (r.error) throw new Error('CredRead spawn failed: ' + r.error.message);
-  if (r.status === 2) throw new Error('credential not found: ' + target);
-  if (r.status !== 0) throw new Error('CredRead failed: ' + String(r.stderr || '').slice(0, 300));
-  const text = String(r.stdout || '').trim();
-  if (!text) throw new Error('empty credential blob for ' + target);
+/**
+ * Parse a credential blob into `{token:{access_token, refresh_token, expiry}}`.
+ * Antigravity stores the OAuth token set as JSON under one secret on every platform.
+ */
+export function parseCredentialBlob(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) throw new Error('empty credential blob');
   let parsed;
-  try { parsed = JSON.parse(text); } catch { throw new Error('credential blob is not JSON'); }
-  return parsed.token ? parsed : { token: parsed };
+  try { parsed = JSON.parse(trimmed); } catch { throw new Error('credential blob is not JSON'); }
+  if (parsed && typeof parsed === 'object' && parsed.token) return parsed;
+  return { token: parsed };
+}
+
+/**
+ * The native credential command for one platform, exposed for diagnostics and tests.
+ * The service/account names are the ones the IDE is expected to use; the Windows entry
+ * (`gemini:antigravity`) is the one verified live — macOS/Linux paths are best-effort.
+ */
+export function credentialCommandFor(platform, target = DEFAULT_CREDENTIAL_TARGET) {
+  if (platform === 'darwin') {
+    return { command: 'security', args: ['find-generic-password', '-s', target, '-w'] };
+  }
+  if (platform === 'linux') {
+    return { command: 'secret-tool', args: ['lookup', 'service', target] };
+  }
+  return null;
+}
+
+/** Read and parse the Antigravity credential blob from the platform credential store. */
+export function readKeyringCredential(target = DEFAULT_CREDENTIAL_TARGET) {
+  let text;
+  if (process.platform === 'win32') {
+    const script = PS_CREDREAD.replace('__TARGET__', String(target).replace(/'/g, "''"));
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', maxBuffer: 1 << 20, windowsHide: true, timeout: 30_000,
+    });
+    if (r.error) throw new Error('CredRead spawn failed: ' + r.error.message);
+    if (r.status === 2) throw new Error('credential not found: ' + target);
+    if (r.status !== 0) throw new Error('CredRead failed: ' + String(r.stderr || '').slice(0, 300));
+    text = r.stdout;
+  } else {
+    const native = credentialCommandFor(process.platform, target);
+    if (!native) {
+      throw new Error('no supported credential store on platform "' + process.platform +
+        '"; set features/credentials explicitly or run on Windows/macOS/Linux (libsecret)');
+    }
+    const r = spawnSync(native.command, native.args, {
+      encoding: 'utf8', maxBuffer: 1 << 20, timeout: 30_000,
+    });
+    if (r.error) throw new Error(native.command + ' is not available: ' + r.error.message);
+    if (r.status !== 0) {
+      throw new Error('credential not found in ' + native.command + ' for "' + target +
+        '" (exit ' + r.status + '): sign in to Antigravity again, and make sure ' + native.command +
+        ' can read the entry from this shell');
+    }
+    text = r.stdout;
+  }
+  return parseCredentialBlob(text);
 }
 
 /* ------------------------------------------------------- OAuth client pairs */

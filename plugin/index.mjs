@@ -51,9 +51,10 @@ const FEATURE_KEYS = new Set([
   'maxOutputTokensCap',
   // built-in agent tools
   'imageGen', 'imageModel', 'imageAspectRatios', 'imageMaxOutputTokens',
+  'durableImages',
   'googleSearchTool', 'searchModel',
 ]);
-const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput', 'imageGen', 'googleSearchTool'];
+const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput', 'imageGen', 'googleSearchTool', 'durableImages'];
 const THINKING_LEVELS = ['low', 'medium', 'high'];
 const IMAGE_RATIOS = DEFAULT_ASPECT_RATIOS;
 
@@ -175,7 +176,7 @@ export const Config = {
           modelCacheTtlMs: raw.modelCacheTtlMs ?? 600_000,
           debugDir: raw.debugDir,
           maxConcurrentRequests: raw.maxConcurrentRequests ?? 2,
-          minRequestIntervalMs: raw.minRequestIntervalMs ?? 0,
+          minRequestIntervalMs: raw.minRequestIntervalMs ?? 500,
           rateLimitCooldownMs: raw.rateLimitCooldownMs ?? 60_000,
           features,
         },
@@ -218,7 +219,15 @@ export async function apply(ctx, config) {
   // (the endpoint cannot ground a tool-using turn, so search gets its own sub-request).
   const toolDisposers = [];
   const registeredTools = [];
-  const generator = createImageGenerator({ client, adapter, config, log, throttle });
+  const generator = createImageGenerator({
+    client,
+    adapter,
+    config,
+    log,
+    throttle,
+    // Durable attachment store when the composition mounts it; media-dir fallback otherwise.
+    getAttachments: () => ctx.get('attachments'),
+  });
   if (config.features.imageGen !== false) {
     toolDisposers.push(registerImageTool(ctx, { generator, config, log }));
     registeredTools.push('image_generate');

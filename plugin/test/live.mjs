@@ -489,7 +489,7 @@ async function main() {
   const throttleIssues = Array.isArray(validated.issues) ? validated.issues : [];
   record('throttle config defaults', throttleIssues.length === 0 &&
       throttleDefaults.maxConcurrentRequests === 2 &&
-      throttleDefaults.minRequestIntervalMs === 0 &&
+      throttleDefaults.minRequestIntervalMs === 500 &&
       throttleDefaults.rateLimitCooldownMs === 60_000,
     'maxConcurrentRequests=' + throttleDefaults.maxConcurrentRequests +
     ' minRequestIntervalMs=' + throttleDefaults.minRequestIntervalMs +
