@@ -64,7 +64,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 | Structured output (`responseSchema`) | works for Gemini models (Claude/GPT-OSS reject it) |
 | Google Search grounding with sources | works through the built-in `google_search` tool; direct grounding only on turns that pass no tools (endpoint limitation) |
 | Request shaping: concurrency cap, request spacing, 429 cooldown | works (top-level config, visible in the settings GUI) |
-| Settings GUI localization | works through the DSH client locale service (en/zh/ru, 72 keys each, English fallback) |
+| Settings GUI localization | works through the DSH client locale service (en/zh/ru, 73 keys each, English fallback) |
 | Retries | model calls are left to `dsh-llm-retry`; tool sub-calls keep two internal retries |
 | Usage (`usageMetadata`, incl. reasoning tokens) | works; the endpoint sends only the four basic counters (prompt / candidates / total / thoughts tokens) — no cached-token count was observed |
 | Model catalogue | dynamic per account; 17 chat models + image models on the test account |
@@ -136,6 +136,8 @@ string of a versioned file-URL mount — e.g. change
 re-imports the module and re-registers the adapter live (verified twice in the running app). The
 client half is a separate bundle and needs a page refresh. Patch and config edits — the managed
 block, or the `features.*` toggles from the settings page — always apply live.
+A `?rev=` mount is temporary: restore the normal package mount afterwards with
+`node tools/apply-profile.mjs --apply --package`, so the profile does not keep a file-URL row.
 
 Nothing else needs configuring: the models appear in the picker as the **Antigravity** group as
 soon as the adapter registers. Pick one and chat.
@@ -314,7 +316,7 @@ The plugin ships a Client half: **Settings → Antigravity** in the DSH Web UI. 
 the plugin version (`Antigravity v0.6.0`).
 
 The whole page is localized through the DSH client locale service under the `antigravity`
-namespace: complete **en / zh / ru** dictionaries (72 keys each) with `{placeholder}`
+namespace: complete **en / zh / ru** dictionaries (73 keys each) with `{placeholder}`
 interpolation. The language follows the DSH language (**Settings → General → Language**) and the
 page re-translates live on a switch; a composition without the locale service falls back to
 English. Technical values stay untranslated on purpose — model ids and names, tool names, paths,

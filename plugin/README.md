@@ -102,6 +102,14 @@ only transient `429`/`503`/`CAPACITY_EXHAUSTED` answers.
 
 ## Settings GUI (Client half)
 
+If the client half is replaced, remember one contract rule: reads of optional services must go
+through `ctx.get('name')`. Reading `ctx.name` for a service that is not declared in `inject`
+throws `cannot get property "<name>" without inject` in Cordis, and a throw inside `apply()` fails
+the entry — on the desktop that aborts web boot with `web boot: 1 entry did not activate` (the
+0.6.0 → 0.6.1 crash). `client.js` therefore uses `ctx.get('locale')` and wraps each activation
+step defensively, so a missing locale service, a duplicate namespace or a clashing slot can never
+take down the boot.
+
 `client.js` is a standard `dsh.client` bundle (declared in `package.json` with `platform: web`,
 `immediately: true`, and the `./client` export). It registers one `settings.section` entry via
 `ctx.slots` and reads the host API with `fetch`:
@@ -116,7 +124,7 @@ only transient `429`/`503`/`CAPACITY_EXHAUSTED` answers.
 | `GET /antigravity/media/?path=<abs>` | serves an image by absolute path when it is under `mediaOutputDir` or the durable attachment store; content type is sniffed from magic bytes and anything outside the two roots is 404 |
 
 Every visible string goes through the DSH client locale service (registered under the
-`antigravity` namespace in `client.js`, complete **en/zh/ru** dictionaries of 72 keys each,
+`antigravity` namespace in `client.js`, complete **en/zh/ru** dictionaries of 73 keys each,
 `{placeholder}` interpolation). The language follows the DSH language and the page re-translates
 live; without a locale service it falls back to English. Model/tool names, paths, `HTTP <status>`
 and the `k ctx`/`k out` markers stay untranslated on purpose.
