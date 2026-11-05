@@ -38,8 +38,10 @@ export function createStatusService({ client, adapter, config, log }) {
 
   async function build() {
     const [account, quotas, catalogue] = await Promise.all([
-      client.fetchAccount ? client.fetchAccount() : Promise.resolve({}),
-      client.fetchQuotaBuckets ? client.fetchQuotaBuckets().catch((error) => ({ error: error.message })) : Promise.resolve([]),
+      retryOnce(() => (client.fetchAccount ? client.fetchAccount() : Promise.resolve({}))),
+      client.fetchQuotaBuckets
+        ? retryOnce(() => client.fetchQuotaBuckets()).catch((error) => ({ error: error.message }))
+        : Promise.resolve([]),
       adapter.loadCatalogue().catch((error) => ({ error: error.message })),
     ]);
     const models = [];
@@ -92,12 +94,27 @@ export function createStatusService({ client, adapter, config, log }) {
     async snapshot({ refresh = false } = {}) {
       if (!refresh && cached && Date.now() - cachedAt < CACHE_MS) return { ...cached, cached: true };
       const value = await build();
-      cached = value;
-      cachedAt = Date.now();
+      // A transient network failure must not be cached: the settings page would then show the
+      // same stale error for a minute even though a retry succeeds.
+      const degraded = Boolean(value.quotasError || value.accountsError || value.modelsError);
+      if (!degraded) {
+        cached = value;
+        cachedAt = Date.now();
+      }
       return { ...value, cached: false };
     },
     invalidate() { cached = null; cachedAt = 0; },
   };
+}
+
+/** One retry for a flaky first network call (token mint / DNS warm-up). */
+async function retryOnce(operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return operation();
+  }
 }
 
 /** Media file name guard: basename only, known image extensions. */
