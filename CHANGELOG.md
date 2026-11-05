@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0 — grounded search tool, request throttling, image editing
+
+Closes the "grounding never works in the agent loop" gap and hardens the account-facing
+behaviour: a `google_search` tool, a request throttle, image editing and a cleaner retry split.
+
+- `google_search` tool (`src/search.mjs`): the endpoint rejects `googleSearch` together with
+  `functionDeclarations` (HTTP 400), so a normal agent turn — which always carries the harness
+  tools — can never ground. The tool issues its own grounded generation with no function
+  declarations (model `features.searchModel`, default `gemini-3.5-flash-lite`) and returns the
+  answer plus a de-duplicated source list rendered as a markdown `Sources:` block. Registered by
+  default; `features.googleSearchTool: false` removes it.
+- `image_generate` now edits as well as draws: the new `reference_path` parameter takes an
+  existing `.png`/`.jpg`/`.jpeg`/`.webp` file (≤ 20 MiB, extension and size guarded) and sends it
+  as `inlineData` before the prompt, turning the call into image-to-image editing.
+- Request throttle (`src/throttle.mjs`): one limiter shared by the adapter and both tools. New
+  top-level config `maxConcurrentRequests` (default `2`), `minRequestIntervalMs` (default `0`)
+  and `rateLimitCooldownMs` (default `60000`, cap on the pause armed by a 429/QUOTA answer,
+  honouring the server's `retryAfter`). A local agent loop can no longer turn into a burst of
+  upstream requests, which lowers the account-abuse risk.
+- Retry policy: model calls no longer retry inside the adapter (previously up to two retries on
+  429/503) — `dsh-llm-retry` owns those, so delay and quota cost are not doubled. Tool sub-calls
+  sit outside that layer and keep two internal retries via `client.openStream({retries: 2})`.
+- Status/GUI: `/antigravity/status` gains `plugin` (`version`, `tools`, `throttle`, `lastError`)
+  and `limits`; the settings page shows the version in the header and a **Служебное** card with
+  the registered tools, the throttle limits and live state, and the last adapter error.
+  `googleSearchTool` is editable live through `POST /antigravity/config`. New
+  `POST /antigravity/test-search` runs one grounded query and returns
+  `{answer, sources[], queries[]}` (501 when the composition has no search wiring), rendered as
+  a **Проверка google_search** card with clickable sources.
+- `modelCacheTtlMs: 0` now means "no catalogue cache" (every catalogue read goes to the
+  endpoint), which the live tests use for a fresh catalogue.
+- Tests: offline checks grew to 37 (throttle concurrency/interval/cooldown, grounded-search
+  parsing, reference-image request, adapter error recording, new config keys, status meta and the
+  new GUI routes). The live suite grew to 16 default checks, 25 with `AG_MATRIX_TEST=1` (a
+  per-model matrix, `groundedSearch`, throttle serialization and one image edit) and 27 with the
+  image gate as well.
+
 ## 0.4.0 — settings GUI with account limits
 
 The plugin now ships a Client half: **Settings → Antigravity** in the DSH Web UI.

@@ -24,6 +24,13 @@ Antigravity models: Gemini 3.8/3.5/3/2.5, Claude Opus/Sonnet 5.5, GPT-OSS 120B, 
 
 Unofficial client. Not affiliated with, endorsed by, or supported by Google or DeepSeek.
 
+> **Personal use, and a ToS risk.** This project talks to a private, undocumented API on the
+> operator's own machine with the operator's own installed Antigravity session. It is not a
+> supported Google integration: using it may breach Google's terms for Antigravity, it spends the
+> account's plan quota, and Google can change or close the endpoint at any time. Use it only with
+> an account you are allowed to use this way, keep the request throttle at its defaults, and
+> expect to maintain it yourself. See [NOTICE](NOTICE).
+
 ## Status
 
 Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.1-rc.5:
@@ -31,8 +38,9 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 | Check | Result |
 |---|---|
 | Offline unit checks (translation, chunk protocol, metadata, errors, throttle, search, image reference, GUI routes) | **37/37** |
-| Live adapter checks against the real API (default suite) | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
-| Live model matrix (`AG_MATRIX_TEST=1`) | **—** (Gemini / Claude / GPT-OSS turns, tools, reasoning, image editing, grounded search) |
+| Live adapter checks against the real API (default suite) | **16/16** |
+| Live model matrix (`AG_MATRIX_TEST=1`) | **25/25** (Gemini/Claude/GPT-OSS turns, tools, reasoning, grounded search, one image edit) |
+| Live full run (`AG_MATRIX_TEST=1` + `AG_IMAGE_TEST=1`) | **27/27** (adds image generation and the image model through the adapter) |
 | DSH end-to-end, text | `dsh headless` with only this plugin mounted → model answer `PONG` |
 | DSH end-to-end, tools | agent created a file through the harness tool loop (tool-call → tool-result → final answer) |
 | DSH end-to-end, built-in image generation | agent called `image_generate` and produced a 1024×1024 JPEG in one turn |
@@ -49,14 +57,14 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 | Tool calling (`functionDeclarations`) incl. parallel calls | works |
 | `thoughtSignature` replay for tool calls (Gemini rejects history without it) | works, encoded in the harness tool-call id |
 | Reasoning stream → harness `reasoning-delta` (the "Thinking" block) | works |
-| Reasoning effort `low/medium/high` → `thinkingLevel` (Gemini 3.x) or `thinkingBudget` (2.5) | works |
+| Reasoning effort `low/medium/high` → `thinkingLevel` (Gemini 3.x) or `thinkingBudget` (2.5) | works for Gemini; `claude-*` accepts `thinkingConfig` without error but streams no thought parts, so effort is effectively ignored there |
 | Image input (harness attachments) | works |
 | Image generation and image editing (`gemini-3.1-flash-image`; `image_generate` takes `reference_path`) | works; image is saved and linked as markdown |
 | Structured output (`responseSchema`) | works for Gemini models (Claude/GPT-OSS reject it) |
 | Google Search grounding with sources | works through the built-in `google_search` tool; direct grounding only on turns that pass no tools (endpoint limitation) |
 | Request shaping: concurrency cap, request spacing, 429 cooldown | works (top-level config, visible in the settings GUI) |
 | Retries | model calls are left to `dsh-llm-retry`; tool sub-calls keep two internal retries |
-| Usage (`usageMetadata`, incl. reasoning tokens) | works; the endpoint sends only the four basic counters, `cacheReadTokens` is filled only if a cached count ever appears |
+| Usage (`usageMetadata`, incl. reasoning tokens) | works; the endpoint sends only the four basic counters (prompt / candidates / total / thoughts tokens) — no cached-token count was observed |
 | Model catalogue | dynamic per account; 17 chat models + image models on the test account |
 
 Deliberately **not** implemented because the private endpoint accepts but ignores them:
@@ -132,7 +140,7 @@ next to it.
 | `upstreamHost` | `https://daily-cloudcode-pa.googleapis.com` | Antigravity API base |
 | `userAgent` | `antigravity/2.29.0` | must contain `antigravity`; the endpoint answers `403 #3501` otherwise |
 | `requestTimeoutMs` | `300000` | discovery RPC timeout (a generation stream has no deadline) |
-| `modelCacheTtlMs` | `600000` | model catalogue cache |
+| `modelCacheTtlMs` | `600000` | model catalogue cache in ms; `0` disables the cache (every catalogue read hits the endpoint) |
 | `maxConcurrentRequests` | `2` | in-flight Antigravity requests; model calls and tool sub-calls share the pool |
 | `minRequestIntervalMs` | `0` | minimum gap between two request starts, in ms |
 | `rateLimitCooldownMs` | `60000` | pause every request for up to this long after a `429`/`QUOTA` answer |
@@ -200,7 +208,7 @@ with the IDE, and parallel bursts are exactly the pattern that looks like abuse.
 | `google_search` is not offered to the agent | `features.googleSearchTool` is `false` (toggle it in the settings GUI or the patch) |
 | `google_search` answers without sources | the model answered from its own grounding-free knowledge; rephrase the query or check `features.searchModel` |
 | `EMPTY_RESPONSE` with a message about the image | image model refused the prompt (or RECITATION) — rephrase |
-| `EMPTY_RESPONSE` with `reference_path …` | the reference file is missing, not an image, or larger than 20 MiB |
+| `INVALID_REQUEST` mentioning `reference_path` | the reference file is missing, is not a `.png`/`.jpg`/`.jpeg`/`.webp`, or is larger than 20 MiB |
 | `403 … (#3501) You do not have a valid license` | `userAgent` lost the `antigravity` substring |
 | `DUPLICATE_ADAPTER` | a stale `antigravity` provider route is still in the `llm-pi-ai` block — remove it |
 | Model missing after an account change | wait for `modelCacheTtlMs` or restart DSH |
@@ -268,24 +276,33 @@ model → google_search {query: "Node.js latest release notes"}
 
 ## Settings GUI
 
-The plugin ships a Client half: **Settings → Antigravity** in the DSH Web UI. It shows
+The plugin ships a Client half: **Settings → Antigravity** in the DSH Web UI. The header shows
+the plugin version (`Antigravity v0.5.0`); the page shows
 
 - account tier, tier name and cloud project (`loadCodeAssist`);
 - **per-model limits** from `retrieveUserQuota`: remaining fraction with a bar (green/amber/red)
   and the quota reset time;
 - the live model catalogue: context window, output cap, input modalities, `thinking` /
   `recommended` badges, and the imageGen model;
-- the effective plugin configuration (the `features.*` flags) with a note on where to edit them;
-- **refresh** (forces a fresh quota read) and a **one-click imageGen smoke test** with an inline
-  preview of the generated image.
+- the effective plugin configuration (the `features.*` flags) with a note on where to edit them.
+  `googleSearchTool`, `googleSearch`, `imageGen`, `imageOutput`, `includeThoughts`,
+  `defaultThinkingLevel` and `imageAspectRatio` are editable from the page and apply live; paths,
+  models and credentials still live in `cordis.patch.yml`;
+- **Служебное** (runtime): plugin version, the registered agent tools (`image_generate`,
+  `google_search`), the effective throttle limits, the live throttle state (`active` / `queued`,
+  and the cooldown deadline after a 429) and the last adapter error with its code and timestamp;
+- **refresh** (forces a fresh quota read), a **one-click imageGen smoke test** with an inline
+  preview of the generated image, and a **one-click grounded-search smoke test**
+  (`Проверка google_search`: query, answer, the queries Google ran, clickable sources).
 
 The page is served by the plugin itself over the harness web server, same-origin:
 
 | Route | Purpose |
 |---|---|
-| `GET /antigravity/status[?refresh=1]` | account, quotas, catalogue and effective config (60 s cache) |
+| `GET /antigravity/status[?refresh=1]` | account, quotas, catalogue, effective config and plugin runtime (`version`, `tools`, `throttle`, `lastError`, `limits`) (60 s cache) |
 | `POST /antigravity/config` | edits the editable `features.*` flags through the harness config editor (applies live) |
 | `POST /antigravity/test-image` | `{prompt, aspect_ratio}` → generated image path + markdown |
+| `POST /antigravity/test-search` | `{query}` → `{ok, query, answer, sources[], queries[]}`; 501 when the composition has no search wiring |
 | `GET /antigravity/media/<name>` | serves a generated image back for the preview |
 
 The Client module is a standard `dsh.client` bundle (`plugin/client.js`): it registers a
@@ -297,10 +314,24 @@ harness web server on `127.0.0.1` and is not exposed elsewhere.
 
 ```powershell
 cd plugin
-node test/unit.mjs     # offline: 27 checks, no network, no Antigravity
-node test/live.mjs     # live: 10 checks against the real API (spends the account quota)
-AG_IMAGE_TEST=1 node test/live.mjs   # additionally exercises the imageGen generator
+node test/unit.mjs          # offline: 37 checks, no network, no Antigravity
+node test/live.mjs          # live default: 16 checks against the real API (spends the account quota)
+$env:AG_MATRIX_TEST = '1'; node test/live.mjs                          # + model matrix: 25 checks
+$env:AG_IMAGE_TEST = '1'; node test/live.mjs                           # + image generation/editing
+$env:AG_IMAGE_TEST = '1'; $env:AG_MATRIX_TEST = '1'; node test/live.mjs  # everything: 27 checks
 ```
+
+On bash the same switches are spelled `AG_MATRIX_TEST=1 node test/live.mjs`. Checks that are not
+enabled, that this account cannot run (model not advertised, image quota wall) or that were not
+reached (no 429 encountered) print `SKIP …` and are not counted, so a different account can
+report a smaller total.
+
+The default run is the cheap smoke suite: catalogue/metadata, text, reasoning, tool calling and
+replay, structured output, grounding, both agent tools, throttle/status config and error
+classification. The matrix adds one turn per vendor and thinking tier (including the Gemini 2.5
+token-budget style), a `groundedSearch` probe, a throttle-serialization probe and one image edit
+through `reference_path`. The image gate adds image generation and the image model through the
+adapter; the reference-image edit runs under either gate.
 
 `tools/apply-profile.mjs` rebuilds and validates the profile patch; `tools/catalogue.mjs`
 prints the raw account catalogue as JSON.
@@ -317,6 +348,12 @@ native adapter contract. `research/` is not published (local probe artifacts).
 - The adapter sends the operator's own Antigravity access token directly to Google's endpoint;
   it never prints or persists tokens.
 - It consumes the operator's own Antigravity plan limits, which are shared with the IDE.
+- The throttle (`maxConcurrentRequests`, `minRequestIntervalMs`, `rateLimitCooldownMs`) and the
+  absence of adapter-level model retries keep the request pattern close to what the IDE itself
+  produces. That is the main lever against the account being flagged for abuse — do not disable
+  it to make the agent faster.
+- The `google_search` tool sends the agent's query to Google's grounding service, and the answer
+  comes back with Google redirect URLs as sources; treat search queries as data leaving the box.
 - `features.mediaOutputDir` and `debugDir` write generated images and adapter events to disk;
   treat `media/` as private and delete when not needed.
 - Unofficial integration of a private API: it may break when Antigravity changes.
