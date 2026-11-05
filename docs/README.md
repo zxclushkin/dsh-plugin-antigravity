@@ -8,7 +8,9 @@ installed packages; treat them as evidence, not as documentation with a stable A
 | File | Scope |
 |---|---|
 | [api.md](api.md) | Antigravity side: endpoint and envelope, credential locations, OAuth refresh, `User-Agent` gate, SSE shape, tool-call format (`functionCall` / `thoughtSignature` / `functionResponse`), model catalogue, quotas and error codes. |
-| [dsh-integration.md](dsh-integration.md) | DSH side: how `@deepseek-ai/dsh-llm-pi-ai` registers a provider route and its models, what the Web UI model picker reads, patch-layer semantics (`config` is replaced wholesale), live-reload behaviour, and how the result was verified. |
+| [capabilities.md](capabilities.md) | The live feature matrix of the private API: which `generationConfig` fields, server-side tools, modalities, RPCs and response metadata actually work, with exact request/response fragments and the mapping to the harness. |
+| [dsh-integration.md](dsh-integration.md) | DSH side, predating the 0.2 native-adapter rewrite: how `@deepseek-ai/dsh-llm-pi-ai` registers a provider route and its models, what the Web UI model picker reads, patch-layer semantics, live-reload behaviour. The route-based install described there is superseded by [dsh-surface.md](dsh-surface.md). |
+| [dsh-surface.md](dsh-surface.md) | The native adapter contract of `@deepseek-ai/dsh-llm` (`LlmAdapter`, `GenerateOptions`, `StreamChunk`, `resolveModel`/`listModels` validation, error normalization) and what the chat UI renders. |
 
-Both are written in Russian. Secrets are masked to `first6…last4`; nothing here contains a
+All are written in Russian. Secrets are masked to `first6…last4`; nothing here contains a
 usable token.

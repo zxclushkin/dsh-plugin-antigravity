@@ -1,6 +1,7 @@
 # Local probe artifacts and runtime data — never published.
 research/
 logs/
+media/
 .tmp/
 
 # Profile patch backups written by tools/apply-profile.mjs

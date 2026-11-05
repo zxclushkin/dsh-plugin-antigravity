@@ -364,14 +364,21 @@ export function createAntigravityClient(config = {}) {
     },
 
     async dispose() { /* stateless: nothing to release */ },
+
+    /** Parse one streaming response body into harness-agnostic generation events. */
+    streamEvents(body) {
+      return parseGenerationStream(body);
+    },
   };
 }
 
 /* ------------------------------------------------------------ SSE parsing */
 
 /**
- * Parse Antigravity's SSE body into generation events.
- * Yields {type:'text'|'thought'|'toolCall'|'finish'|'usage'|'meta'}.
+ * Parse Antigravity's SSE body into generation events:
+ *   {type:'text'|'thought'|'toolCall'|'media'|'code'|'grounding'|'usage'|'candidate'
+ *        |'meta'|'finish'}
+ * `code` carries Gemini code-execution parts, `grounding` the search metadata.
  */
 export async function* parseGenerationStream(body) {
   const decoder = new TextDecoder();
@@ -395,6 +402,19 @@ export async function* parseGenerationStream(body) {
           for (const part of (candidate.content && candidate.content.parts) || []) {
             if (part.functionCall) {
               yield { type: 'toolCall', call: part.functionCall, thoughtSignature: part.thoughtSignature };
+            } else if (part.executableCode) {
+              yield {
+                type: 'code',
+                kind: 'code',
+                language: String(part.executableCode.language || 'python').toLowerCase(),
+                text: String(part.executableCode.code || ''),
+              };
+            } else if (part.codeExecutionResult) {
+              yield {
+                type: 'code',
+                kind: 'result',
+                text: String(part.codeExecutionResult.output || ''),
+              };
             } else if (part.inlineData || part.fileData) {
               yield { type: 'media', part };
             } else if (typeof part.text === 'string') {
@@ -405,8 +425,16 @@ export async function* parseGenerationStream(body) {
               };
             }
           }
+          yield { type: 'candidate', candidate };
+          if (candidate.finishMessage) yield { type: 'finishMessage', message: String(candidate.finishMessage) };
           if (candidate.finishReason) finishReason = candidate.finishReason;
+          // Gemini carries search citations on the candidate, not on the response.
+          if (candidate.groundingMetadata) yield { type: 'grounding', metadata: candidate.groundingMetadata };
+          if (candidate.citationMetadata) yield { type: 'citations', metadata: candidate.citationMetadata };
         }
+        if (response.groundingMetadata) yield { type: 'grounding', metadata: response.groundingMetadata };
+        if (response.citationMetadata) yield { type: 'citations', metadata: response.citationMetadata };
+        if (response.urlContextMetadata) yield { type: 'urlContext', metadata: response.urlContextMetadata };
         if (response.usageMetadata) yield { type: 'usage', usage: response.usageMetadata };
         if (response.modelVersion) yield { type: 'meta', modelName: response.modelVersion, responseId: response.responseId };
       }

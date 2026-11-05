@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-antigravity",
-  "version": "0.1.0",
-  "description": "Google Antigravity model provider for DeepSeek Harness: a localhost OpenAI-compatible gateway that reuses the credentials of an installed Antigravity app (Gemini, Claude, GPT-OSS).",
+  "version": "0.2.0",
+  "description": "Google Antigravity model provider for DeepSeek Harness: a native LLM adapter that reuses the credentials of an installed Antigravity app (Gemini, Claude, GPT-OSS, image generation) without any local HTTP gateway.",
   "type": "module",
   "main": "index.mjs",
   "exports": {
@@ -11,11 +11,12 @@
   "files": [
     "index.mjs",
     "src",
+    "test",
     "README.md"
   ],
   "scripts": {
-    "test": "node test/unit.mjs && node --check index.mjs",
-    "test:live": "node test/gateway.mjs"
+    "test": "node test/unit.mjs",
+    "test:live": "node test/live.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -27,8 +28,8 @@
     "antigravity",
     "gemini",
     "claude",
-    "llm",
-    "openai-compatible"
+    "llm-adapter",
+    "native-plugin"
   ],
   "repository": {
     "type": "git",

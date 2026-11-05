@@ -18,12 +18,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # Offline only: translation, tool-call ids, plugin contract. The live e2e test
-      # (plugin/test/gateway.mjs) needs a real Antigravity installation and its quota.
+      # Offline only: translation, chunk protocol, model metadata, error classification.
+      # The live test (plugin/test/live.mjs) needs a real Antigravity installation and quota.
       - run: node plugin/test/unit.mjs
       - run: node --check plugin/index.mjs
+      - run: node --check plugin/src/adapter.mjs
       - run: node --check plugin/src/antigravity.mjs
-      - run: node --check plugin/src/openai.mjs
-      - run: node --check plugin/src/server.mjs
+      - run: node --check plugin/src/errors.mjs
+      - run: node --check plugin/src/gemini.mjs
       - run: node --check tools/apply-profile.mjs
       - run: node --check tools/catalogue.mjs

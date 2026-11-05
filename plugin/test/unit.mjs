@@ -1,13 +1,15 @@
 // language: JavaScript (ESM), file: plugin/test/unit.mjs, runtime: Node >= 20
-// Offline checks: protocol translation, plugin contract, model filtering. No network,
-// no Antigravity installation needed.   node plugin/test/unit.mjs
+// Offline checks for the native DSH adapter: protocol translation, chunk protocol,
+// model metadata, error classification. No network, no Antigravity installation.
+//   node plugin/test/unit.mjs
 import assert from 'node:assert/strict';
 import { apply, Config, inject, name } from '../index.mjs';
+import { toModelInfo, prettyModelName, AntigravityAdapter } from '../src/adapter.mjs';
 import {
-  buildUpstreamRequest, convertSchema, convertToolChoice, convertTools, decodeToolCallId,
-  finishReasonToOpenAi, makeToolCallId, openAiModelList, openAiUsage,
-} from '../src/openai.mjs';
-import { isChatModel } from '../src/server.mjs';
+  buildContents, buildGenerateRequest, convertSchema, convertThinking, convertToolDeclarations,
+  decodeToolCallId, encodeToolCallId, groundingText, mapFinishReason, mapUsage,
+} from '../src/gemini.mjs';
+import { AntigravityError, httpError, transportError } from '../src/errors.mjs';
 
 let passed = 0;
 function check(label, fn) {
@@ -35,50 +37,69 @@ async function checkAsync(label, fn) {
 
 check('plugin exports name/inject/Config/apply', () => {
   assert.equal(typeof name, 'string');
-  assert.deepEqual(inject, []);
+  assert.deepEqual(inject, ['llm']);
   assert.equal(typeof apply, 'function');
   assert.equal(Config['~standard'].version, 1);
 });
 
-check('Config applies defaults', () => {
+check('Config applies defaults and validates features', () => {
   const { value } = Config['~standard'].validate({});
-  assert.equal(value.host, '127.0.0.1');
-  assert.equal(value.port, 8732);
   assert.equal(value.enabled, true);
+  assert.equal(value.userAgent, 'antigravity/2.29.0');
+  assert.deepEqual(value.features, {});
+  const withFeatures = Config['~standard'].validate({
+    features: { googleSearch: true, imageAspectRatio: '16:9', thinkingBudgets: { low: 512 } },
+  });
+  assert.equal(withFeatures.issues, undefined);
+  assert.equal(withFeatures.value.features.googleSearch, true);
+  assert.equal(withFeatures.value.features.thinkingBudgets.low, 512);
 });
 
-check('Config rejects unknown keys and bad types', () => {
+check('Config rejects bad input', () => {
   assert.ok(Config['~standard'].validate({ nope: 1 }).issues);
-  assert.ok(Config['~standard'].validate({ port: 'x' }).issues);
+  assert.ok(Config['~standard'].validate({ features: { googleSearch: 'yes' } }).issues);
+  assert.ok(Config['~standard'].validate({ features: { defaultThinkingLevel: 'extreme' } }).issues);
+  assert.ok(Config['~standard'].validate({ features: { unknown: true } }).issues);
 });
 
-/* ------------------------------------------------------------- model filter */
+/* ------------------------------------------------------------ model metadata */
 
-check('model filter drops non-chat catalogue entries', () => {
-  assert.equal(isChatModel('gemini-3-flash'), true);
-  assert.equal(isChatModel('claude-opus-5-5-high'), true);
-  assert.equal(isChatModel('tab_flash_lite_preview'), false);
-  assert.equal(isChatModel('chat_23310'), false);
-  assert.equal(isChatModel('gemini-3.1-flash-image'), false);
-  assert.equal(isChatModel('gemini-3.8-flash-tiered'), false);
+check('model names are derived from ids', () => {
+  assert.equal(prettyModelName('gemini-3-flash'), 'Gemini 3 Flash');
+  assert.equal(prettyModelName('claude-opus-5-5-high'), 'Claude Opus 5.5 (High)');
+  assert.equal(prettyModelName('gpt-oss-120b-medium'), 'GPT-OSS 120B (Medium)');
+  assert.equal(prettyModelName('gemini-2.5-flash-lite'), 'Gemini 2.5 Flash Lite');
 });
 
-/* ------------------------------------------------------------ schema mapping */
+check('catalogue entry becomes valid harness model info', () => {
+  const info = toModelInfo({
+    id: 'gemini-3-flash', supportsImages: true, supportsThinking: true,
+    contextWindow: 1048576, maxTokens: 65536, kind: 'chat',
+  });
+  assert.equal(info.provider, 'antigravity');
+  assert.equal(info.id, 'gemini-3-flash');
+  assert.equal(info.name, 'Gemini 3 Flash');
+  assert.deepEqual(info.inputModalities, ['text', 'image']);
+  assert.deepEqual(info.context, { contextWindow: 1048576 });
+  assert.equal(info.defaultMaxTokens, 65536);
+  assert.equal(info.reasoning.defaultEffort, 'medium');
+  assert.deepEqual(info.reasoning.efforts.map((effort) => effort.id), ['low', 'medium', 'high']);
+  const image = toModelInfo({ id: 'gemini-3.1-flash-image', kind: 'image', supportsImages: true, contextWindow: 1000, maxTokens: 100 });
+  assert.equal(image.reasoning, undefined);
+  assert.deepEqual(image.inputModalities, ['text', 'image']);
+});
 
-check('JSON Schema becomes a Gemini schema', () => {
+/* --------------------------------------------------------------- schemas */
+
+check('JSON schema becomes a Gemini schema', () => {
   const schema = convertSchema({
-    $schema: 'http://json-schema.org/draft-07/schema#',
     type: 'object',
     additionalProperties: false,
     properties: {
       city: { type: 'string', description: 'City name' },
       units: { type: 'string', enum: ['c', 'f'] },
       layers: { type: 'array', items: { type: 'integer' } },
-      nested: {
-        type: 'object',
-        properties: { flag: { type: 'boolean', default: true } },
-        required: ['flag', 'ghost'],
-      },
+      nested: { type: 'object', properties: { flag: { type: 'boolean', default: true } }, required: ['flag', 'ghost'] },
     },
     required: ['city', 'ghost'],
     default: {},
@@ -87,170 +108,259 @@ check('JSON Schema becomes a Gemini schema', () => {
   assert.equal(schema.type, 'OBJECT');
   assert.equal(schema.properties.city.type, 'STRING');
   assert.deepEqual(schema.properties.units.enum, ['c', 'f']);
-  assert.equal(schema.properties.layers.type, 'ARRAY');
   assert.equal(schema.properties.layers.items.type, 'INTEGER');
-  assert.deepEqual(schema.required, ['city']); // missing properties are dropped from required
+  assert.deepEqual(schema.required, ['city']);
   assert.equal('additionalProperties' in schema, false);
-  assert.equal('$schema' in schema, false);
   assert.equal('default' in schema, false);
-});
-
-check('object without properties degrades to a string', () => {
-  const schema = convertSchema({ type: 'object' });
-  assert.equal(schema.type, 'STRING');
-});
-
-check('nullable and anyOf survive', () => {
-  const schema = convertSchema({ anyOf: [{ type: 'string' }, { type: 'null' }] });
-  assert.equal(schema.type, 'STRING');
-  assert.equal(schema.nullable, true);
-});
-
-/* --------------------------------------------------------------- tool calls */
-
-check('OpenAI tools become functionDeclarations', () => {
-  const tools = convertTools([
-    { type: 'function', function: { name: 'get_weather', description: 'd', parameters: { type: 'object', properties: { city: { type: 'string' } } } } },
-    { type: 'function', function: { name: 'noop' } },
-    { type: 'not-a-function', name: 'ignored' },
-  ]);
-  assert.equal(tools.length, 1);
-  assert.equal(tools[0].functionDeclarations.length, 2);
-  assert.equal(tools[0].functionDeclarations[0].name, 'get_weather');
-  assert.equal(tools[0].functionDeclarations[1].parameters, undefined);
-  assert.equal(convertTools([]), null);
+  assert.deepEqual(schema.properties.nested.required, ['flag']);
 });
 
 check('no-argument tools are declared without parameters', () => {
-  // Anthropic rejects an empty input_schema forwarded by Antigravity ("Input should be
-  // 'object'"), and Gemini invents arguments when given an OBJECT shell — so omit it.
-  const tools = convertTools([
-    { type: 'function', function: { name: 'ping' } },
-    { type: 'function', function: { name: 'ping2', parameters: { type: 'object', properties: {} } } },
-    { type: 'function', function: { name: 'get', parameters: { type: 'object', properties: { id: { type: 'string' } } } } },
+  const tools = convertToolDeclarations([
+    { name: 'ping' },
+    { name: 'ping2', parameters: { type: 'object', properties: {} } },
+    { name: 'get', parameters: { type: 'object', properties: { id: { type: 'string' } } } },
+    { name: 'deferred', deferLoading: true, parameters: { type: 'object', properties: { x: { type: 'string' } } } },
   ]);
-  const declarations = tools[0].functionDeclarations;
-  assert.equal(declarations[0].parameters, undefined);
-  assert.equal(declarations[1].parameters, undefined);
-  assert.equal(declarations[2].parameters.type, 'OBJECT');
-  assert.deepEqual(declarations[2].parameters.required, undefined);
-  assert.deepEqual(declarations[2].parameters.properties.id, { type: 'STRING' });
+  assert.equal(tools.length, 3);
+  assert.equal(tools[0].parameters, undefined);
+  assert.equal(tools[1].parameters, undefined);
+  assert.equal(tools[2].parameters.type, 'OBJECT');
+  assert.deepEqual(tools[2].parameters.properties.id, { type: 'STRING' });
 });
 
-check('tool_choice maps to toolConfig', () => {
-  assert.deepEqual(convertToolChoice('auto'), { functionCallingConfig: { mode: 'AUTO' } });
-  assert.deepEqual(convertToolChoice('none'), { functionCallingConfig: { mode: 'NONE' } });
-  assert.deepEqual(convertToolChoice('required'), { functionCallingConfig: { mode: 'ANY' } });
-  assert.deepEqual(convertToolChoice({ type: 'function', function: { name: 'x' } }),
-    { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['x'] } });
-  assert.equal(convertToolChoice(undefined), null);
+/* -------------------------------------------------------------- thinking */
+
+check('reasoning effort maps to thinkingConfig', () => {
+  const levelModel = { thinkingStyle: 'level' };
+  assert.deepEqual(convertThinking('low', levelModel, {}), { includeThoughts: true, thinkingLevel: 'LOW' });
+  assert.deepEqual(convertThinking('high', levelModel, {}), { includeThoughts: true, thinkingLevel: 'HIGH' });
+  assert.equal(convertThinking(undefined, levelModel, {}), undefined);
+  const budgetModel = { thinkingStyle: 'budget' };
+  assert.deepEqual(convertThinking('medium', budgetModel, {}), { includeThoughts: true, thinkingBudget: 4096 });
+  assert.deepEqual(convertThinking('low', budgetModel, { thinkingBudgets: { low: 77 } }), { includeThoughts: true, thinkingBudget: 77 });
+  assert.deepEqual(convertThinking(undefined, levelModel, { defaultThinkingLevel: 'high' }),
+    { includeThoughts: true, thinkingLevel: 'HIGH' });
 });
 
-check('thoughtSignature survives a tool_call id round-trip', () => {
+/* --------------------------------------------------------------- tool ids */
+
+check('thoughtSignature survives a tool-call id round-trip', () => {
   const signature = 'EmcKZQFpFH0T+/abc==';
-  const id = makeToolCallId('call_123', signature);
+  const id = encodeToolCallId('call_123', signature);
   const back = decodeToolCallId(id);
   assert.equal(back.upstreamId, 'call_123');
   assert.equal(back.signature, signature);
-  const plain = makeToolCallId('call_456', undefined);
-  assert.equal(plain, 'call_456');
-  assert.equal(decodeToolCallId(plain).signature, undefined);
+  assert.equal(encodeToolCallId('call_456', undefined), 'call_456');
+  assert.equal(decodeToolCallId('call_456').signature, undefined);
 });
 
-/* ----------------------------------------------------------- request mapping */
+/* -------------------------------------------------------------- messages */
 
-await checkAsync('messages become contents/systemInstruction/tools', async () => {
-  const callId = makeToolCallId('call_77', 'SIG');
-  const { model, request, meta } = await buildUpstreamRequest({
-    model: 'gemini-3-flash',
+await checkAsync('harness messages become Gemini contents', async () => {
+  const callId = encodeToolCallId('call_77', 'SIG');
+  const { contents, systemInstruction } = await buildContents({
+    system: 'be terse',
     messages: [
-      { role: 'system', content: 'be terse' },
-      { role: 'user', content: 'weather in Moscow?' },
-      { role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'get_weather', arguments: '{"city":"Moscow"}' } }] },
-      { role: 'tool', tool_call_id: callId, content: '{"tempC":-3}' },
+      { role: 'system', content: [{ type: 'text', text: 'second system line' }] },
+      { role: 'user', content: [{ type: 'text', text: 'weather in Moscow?' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Checking.' },
+          { type: 'reasoning', text: 'inner monologue' },
+          { type: 'tool-call', id: callId, name: 'get_weather', arguments: '{"city":"Moscow"}' },
+        ],
+      },
+      { role: 'tool', toolCallId: callId, content: [{ type: 'text', text: '{"tempC":-3}' }], isError: false },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'thanks' },
+          { type: 'image', attachment: { attachmentId: 'sha256:x', width: 10, height: 10, mediaType: 'image/png' } },
+        ],
+      },
     ],
-    tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }],
-    tool_choice: 'auto',
-    max_tokens: 2048,
-    temperature: 0.2,
-    stop: 'END',
-    stream: true,
-  }, { sessionId: 's1' });
+  }, async (block) => ({ mimeType: block.attachment.mediaType, data: 'AAAA' }));
 
-  assert.equal(model, 'gemini-3-flash');
-  assert.equal(meta.stream, true);
-  assert.equal(request.systemInstruction.parts[0].text, 'be terse');
-  assert.deepEqual(request.contents.map((c) => c.role), ['user', 'model', 'user']);
-  const call = request.contents[1].parts[0].functionCall;
+  assert.deepEqual(systemInstruction.parts[0].text, 'be terse\n\nsecond system line');
+  assert.deepEqual(contents.map((entry) => entry.role), ['user', 'model', 'user']);
+  assert.deepEqual(contents[0].parts[0], { text: 'weather in Moscow?' });
+  assert.equal(contents[1].parts[0].text, 'Checking.');
+  assert.equal(contents[1].parts.length, 2, 'reasoning blocks are not replayed');
+  const call = contents[1].parts[1].functionCall;
   assert.equal(call.name, 'get_weather');
   assert.equal(call.id, 'call_77');
   assert.deepEqual(call.args, { city: 'Moscow' });
-  assert.equal(request.contents[1].parts[0].thoughtSignature, 'SIG');
-  const response = request.contents[2].parts[0].functionResponse;
+  assert.equal(contents[1].parts[1].thoughtSignature, 'SIG');
+  const response = contents[2].parts[0].functionResponse;
   assert.equal(response.name, 'get_weather');
   assert.equal(response.id, 'call_77');
   assert.deepEqual(response.response, { tempC: -3 });
+  assert.deepEqual(contents[2].parts[0].functionResponse, response);
+  assert.deepEqual(contents[2].parts[1], { text: 'thanks' });
+  assert.deepEqual(contents[2].parts[2], { inlineData: { mimeType: 'image/png', data: 'AAAA' } });
+});
+
+/* --------------------------------------------------------------- request */
+
+await checkAsync('generate request carries tools, thinking and config', async () => {
+  const { request } = await buildGenerateRequest({
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    tools: [{ name: 'get_weather', description: 'd', parameters: { type: 'object', properties: { city: { type: 'string' } } } }],
+    reasoningEffort: 'high',
+    temperature: 0.3,
+    maxTokens: 2048,
+    stop: ['END'],
+  }, { id: 'gemini-3-flash', thinkingStyle: 'level' }, { googleSearch: true }, async () => null);
+
+  // The endpoint rejects googleSearch together with functionDeclarations: tools win.
+  assert.equal(request.tools.length, 1);
+  assert.equal(request.tools[0].functionDeclarations[0].name, 'get_weather');
+  assert.equal(request.toolConfig, undefined);
+  assert.equal(request.generationConfig.temperature, 0.3);
   assert.equal(request.generationConfig.maxOutputTokens, 2048);
-  assert.equal(request.generationConfig.temperature, 0.2);
   assert.deepEqual(request.generationConfig.stopSequences, ['END']);
-  assert.deepEqual(request.toolConfig, { functionCallingConfig: { mode: 'AUTO' } });
-  assert.equal(request.sessionId, 's1');
+  assert.deepEqual(request.generationConfig.thinkingConfig, { includeThoughts: true, thinkingLevel: 'HIGH' });
+
+  const grounded = await buildGenerateRequest({
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  }, { id: 'gemini-3-flash', thinkingStyle: 'level' }, { googleSearch: true }, async () => null);
+  assert.deepEqual(grounded.request.tools, [{ googleSearch: {} }]);
 });
 
-await checkAsync('reasoning_effort becomes thinkingConfig', async () => {
-  const { request } = await buildUpstreamRequest({
-    model: 'gemini-3-flash',
-    messages: [{ role: 'user', content: 'hi' }],
-    reasoning_effort: 'low',
+await checkAsync('structured output and image config', async () => {
+  const structured = await buildGenerateRequest({
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'json please' }] }],
+  }, { id: 'gemini-3-flash', thinkingStyle: 'level' }, {
+    responseSchema: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+  }, async () => null);
+  assert.equal(structured.request.generationConfig.responseMimeType, 'application/json');
+  assert.equal(structured.request.generationConfig.responseSchema.type, 'OBJECT');
+
+  const image = await buildGenerateRequest({
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'a red circle' }] }],
+    maxTokens: 4096,
+  }, { id: 'gemini-3.1-flash-image', kind: 'image' }, {}, async () => null);
+  assert.deepEqual(image.request.generationConfig.responseModalities, ['TEXT', 'IMAGE']);
+  assert.deepEqual(image.request.generationConfig.imageConfig, { aspectRatio: '1:1' });
+});
+
+/* -------------------------------------------------------------- response */
+
+check('usage and finish mapping', () => {
+  assert.deepEqual(
+    mapUsage({ promptTokenCount: 100, candidatesTokenCount: 20, thoughtsTokenCount: 5, cachedContentTokenCount: 40, totalTokenCount: 125 }),
+    { inputTokens: 100, outputTokens: 25, totalTokens: 125, cacheReadTokens: 40 },
+  );
+  assert.deepEqual(mapFinishReason({ finishReason: 'STOP' }, true), { kind: 'stop' });
+  assert.deepEqual(mapFinishReason({ finishReason: 'MAX_TOKENS' }, true), { kind: 'max-tokens' });
+  assert.deepEqual(mapFinishReason({}, false),
+    { kind: 'error', failure: { code: 'EMPTY_RESPONSE', message: 'model returned a completed response with no content' } });
+  assert.equal(groundingText({ groundingChunks: [{ web: { uri: 'https://a.example', title: 'A' } }] }),
+    '\n\nSources:\n[1] A — https://a.example');
+  assert.equal(groundingText(null), '');
+});
+
+check('errors carry harness failure facts', () => {
+  const error = httpError(401, '{"error":{"message":"bad token"}}');
+  assert.equal(error.code, 'AUTH');
+  assert.equal(error.failure.code, 'AUTH');
+  assert.equal(error.failure.status, 401);
+  assert.equal(httpError(429, '{"error":{"message":"QUOTA_EXHAUSTED"}}').code, 'QUOTA');
+  assert.equal(httpError(503, 'MODEL_CAPACITY_EXHAUSTED').code, 'SERVER');
+  assert.equal(httpError(400, 'Request contains an invalid argument.').code, 'INVALID_REQUEST');
+  assert.equal(transportError(new Error('socket hang up')).code, 'TRANSPORT');
+  assert.equal(transportError(new Error('The operation was aborted'), { aborted: true }).code, 'ABORTED');
+  assert.ok(new AntigravityError('x', 'AUTH') instanceof Error);
+});
+
+/* ------------------------------------------------------- adapter streaming */
+
+function stubClient(events, models) {
+  return {
+    host: 'stub',
+    fetchModels: async () => ({ models, defaultModelId: 'gemini-3-flash' }),
+    async *streamEvents() { for (const event of events) yield event; },
+    async openStream() { return { ok: true, status: 200, body: {} }; },
+  };
+}
+
+async function collectChunks(adapter, options) {
+  const chunks = [];
+  for await (const chunk of adapter.stream(options)) chunks.push(chunk);
+  return chunks;
+}
+
+const catalogue = {
+  'gemini-3-flash': { id: 'gemini-3-flash', supportsImages: true, supportsThinking: true, contextWindow: 1048576, maxTokens: 65536 },
+};
+const ask = { provider: 'antigravity', model: 'gemini-3-flash', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] };
+
+await checkAsync('stream emits harness chunks (text, reasoning, tool call)', async () => {
+  const events = [
+    { type: 'text', text: 'Hello ' },
+    { type: 'thought', text: 'thinking' },
+    { type: 'text', text: 'world' },
+    { type: 'toolCall', call: { name: 'ping', args: { a: 1 }, id: 'call_9' }, thoughtSignature: 'SIG' },
+    { type: 'usage', usage: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 } },
+    { type: 'candidate', candidate: { finishReason: 'STOP' } },
+  ];
+  const adapter = new AntigravityAdapter({ client: stubClient(events, catalogue), config: { features: {} } });
+  const chunks = await collectChunks(adapter, ask);
+  assert.deepEqual(chunks.map((chunk) => chunk.type),
+    ['text-delta', 'reasoning-delta', 'text-delta', 'tool-call-delta', 'usage', 'finish']);
+  assert.equal(chunks[0].text, 'Hello ');
+  assert.equal(chunks[1].text, 'thinking');
+  assert.equal(chunks[3].name, 'ping');
+  assert.equal(chunks[3].argumentsDelta, '{"a":1}');
+  assert.equal(decodeToolCallId(chunks[3].id).signature, 'SIG');
+  assert.deepEqual(chunks[4].usage, { inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  assert.deepEqual(chunks[5].reason, { kind: 'stop' });
+});
+
+await checkAsync('stream reports empty responses as failures', async () => {
+  const events = [{ type: 'candidate', candidate: { finishReason: 'STOP' } }];
+  const adapter = new AntigravityAdapter({ client: stubClient(events, catalogue), config: { features: {} } });
+  const chunks = await collectChunks(adapter, ask);
+  assert.equal(chunks[chunks.length - 1].reason.kind, 'error');
+  assert.equal(chunks[chunks.length - 1].reason.failure.code, 'EMPTY_RESPONSE');
+});
+
+await checkAsync('stream saves generated media and links it', async () => {
+  const events = [
+    { type: 'media', part: { inlineData: { mimeType: 'image/jpeg', data: Buffer.from('jpegbytes').toString('base64') } } },
+    { type: 'candidate', candidate: { finishReason: 'STOP' } },
+  ];
+  const imageCatalogue = { 'gemini-3.1-flash-image': { id: 'gemini-3.1-flash-image', supportsImages: true, kind: 'image' } };
+  const adapter = new AntigravityAdapter({
+    client: stubClient(events, imageCatalogue),
+    config: { features: { mediaOutputDir: 'C:/lab/antigravity/.tmp/test-media' } },
   });
-  assert.deepEqual(request.generationConfig.thinkingConfig, { includeThoughts: true, thinkingLevel: 'LOW' });
+  const chunks = await collectChunks(adapter, { ...ask, model: 'gemini-3.1-flash-image' });
+  const text = chunks.filter((chunk) => chunk.type === 'text-delta').map((chunk) => chunk.text).join('');
+  assert.match(text, /!\[image\]\(.+\.jpeg\)/);
 });
 
-await checkAsync('max tokens are capped when a cap is set', async () => {
-  const { request } = await buildUpstreamRequest({
-    model: 'x', messages: [{ role: 'user', content: 'hi' }], max_tokens: 999999,
-  }, { maxOutputTokensCap: 4096 });
-  assert.equal(request.generationConfig.maxOutputTokens, 4096);
-});
-
-await checkAsync('image data URLs become inlineData', async () => {
-  const png = 'data:image/png;base64,iVBORw0KGgo=';
-  const { request } = await buildUpstreamRequest({
-    model: 'gemini-3-flash',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this?' }, { type: 'image_url', image_url: { url: png } }] }],
-  });
-  const parts = request.contents[0].parts;
-  assert.equal(parts[0].text, 'what is this?');
-  assert.deepEqual(parts[1], { inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } });
-});
-
-/* ---------------------------------------------------------- response mapping */
-
-check('finish reasons map to OpenAI', () => {
-  assert.equal(finishReasonToOpenAi('STOP', false), 'stop');
-  assert.equal(finishReasonToOpenAi('STOP', true), 'tool_calls');
-  assert.equal(finishReasonToOpenAi('MAX_TOKENS', false), 'length');
-  assert.equal(finishReasonToOpenAi('SAFETY', false), 'content_filter');
-  assert.equal(finishReasonToOpenAi(null, false), 'stop');
-});
-
-check('usage includes thinking and cache tokens', () => {
-  const usage = openAiUsage({
-    promptTokenCount: 100, candidatesTokenCount: 20, thoughtsTokenCount: 5,
-    cachedContentTokenCount: 40, totalTokenCount: 125,
-  });
-  assert.equal(usage.prompt_tokens, 100);
-  assert.equal(usage.completion_tokens, 25);
-  assert.equal(usage.total_tokens, 125);
-  assert.equal(usage.prompt_tokens_details.cached_tokens, 40);
-  assert.equal(openAiUsage(undefined), undefined);
-});
-
-check('model list uses the OpenAI envelope', () => {
-  const list = openAiModelList({ 'gemini-3-flash': { id: 'gemini-3-flash', provider: 'GOOGLE' } });
-  assert.equal(list.object, 'list');
-  assert.equal(list.data[0].id, 'gemini-3-flash');
-  assert.equal(list.data[0].object, 'model');
+await checkAsync('listModels and resolveModel expose the catalogue', async () => {
+  const adapter = new AntigravityAdapter({ client: stubClient([], catalogue), config: { features: {} } });
+  const models = await adapter.listModels('antigravity');
+  assert.deepEqual(models, [{
+    provider: 'antigravity',
+    id: 'gemini-3-flash',
+    name: 'Gemini 3 Flash',
+    description: 'Antigravity model',
+    inputModalities: ['text', 'image'],
+  }]);
+  const info = await adapter.resolveModel('antigravity', 'gemini-3-flash');
+  assert.equal(info.id, 'gemini-3-flash');
+  assert.equal(info.context.contextWindow, 1048576);
+  await assert.rejects(() => adapter.resolveModel('antigravity', 'nope'), /does not offer model/);
+  assert.equal(adapter.providerRetryPolicy('antigravity'), undefined);
+  assert.deepEqual(adapter.providerInfo('antigravity'), { id: 'antigravity', name: 'Antigravity' });
+  const prepared = await adapter.prepareCall('antigravity', 'gemini-3-flash');
+  assert.equal(prepared.model.id, 'gemini-3-flash');
+  assert.equal(typeof prepared.stream, 'function');
 });
 
 console.log('\n' + passed + ' checks passed');
