@@ -30,8 +30,9 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 
 | Check | Result |
 |---|---|
-| Offline unit checks (translation, chunk protocol, metadata, errors, GUI routes) | **27/27** |
-| Live adapter checks against the real API | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
+| Offline unit checks (translation, chunk protocol, metadata, errors, throttle, search, image reference, GUI routes) | **37/37** |
+| Live adapter checks against the real API (default suite) | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
+| Live model matrix (`AG_MATRIX_TEST=1`) | **—** (Gemini / Claude / GPT-OSS turns, tools, reasoning, image editing, grounded search) |
 | DSH end-to-end, text | `dsh headless` with only this plugin mounted → model answer `PONG` |
 | DSH end-to-end, tools | agent created a file through the harness tool loop (tool-call → tool-result → final answer) |
 | DSH end-to-end, built-in image generation | agent called `image_generate` and produced a 1024×1024 JPEG in one turn |
@@ -44,15 +45,18 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 |---|---|
 | Text streaming, system prompts, stop sequences, temperature, max tokens | works |
 | **Built-in `image_generate` tool — any model can draw mid-conversation** | works (agent called it in a real turn; 1024×1024 JPEG produced and rendered) |
+| **Built-in `google_search` tool — any model can search the web and gets cited sources** | works (grounded sub-request; answer plus a markdown source list) |
 | Tool calling (`functionDeclarations`) incl. parallel calls | works |
 | `thoughtSignature` replay for tool calls (Gemini rejects history without it) | works, encoded in the harness tool-call id |
 | Reasoning stream → harness `reasoning-delta` (the "Thinking" block) | works |
 | Reasoning effort `low/medium/high` → `thinkingLevel` (Gemini 3.x) or `thinkingBudget` (2.5) | works |
 | Image input (harness attachments) | works |
-| Image generation and image editing (`gemini-3.1-flash-image`) | works; image is saved and linked as markdown |
+| Image generation and image editing (`gemini-3.1-flash-image`; `image_generate` takes `reference_path`) | works; image is saved and linked as markdown |
 | Structured output (`responseSchema`) | works for Gemini models (Claude/GPT-OSS reject it) |
-| Google Search grounding with sources | works **only on turns that pass no tools** (endpoint limitation) |
-| Usage incl. cached tokens | works |
+| Google Search grounding with sources | works through the built-in `google_search` tool; direct grounding only on turns that pass no tools (endpoint limitation) |
+| Request shaping: concurrency cap, request spacing, 429 cooldown | works (top-level config, visible in the settings GUI) |
+| Retries | model calls are left to `dsh-llm-retry`; tool sub-calls keep two internal retries |
+| Usage (`usageMetadata`, incl. reasoning tokens) | works; the endpoint sends only the four basic counters, `cacheReadTokens` is filled only if a cached count ever appears |
 | Model catalogue | dynamic per account; 17 chat models + image models on the test account |
 
 Deliberately **not** implemented because the private endpoint accepts but ignores them:
@@ -129,14 +133,19 @@ next to it.
 | `userAgent` | `antigravity/2.29.0` | must contain `antigravity`; the endpoint answers `403 #3501` otherwise |
 | `requestTimeoutMs` | `300000` | discovery RPC timeout (a generation stream has no deadline) |
 | `modelCacheTtlMs` | `600000` | model catalogue cache |
+| `maxConcurrentRequests` | `2` | in-flight Antigravity requests; model calls and tool sub-calls share the pool |
+| `minRequestIntervalMs` | `0` | minimum gap between two request starts, in ms |
+| `rateLimitCooldownMs` | `60000` | pause every request for up to this long after a `429`/`QUOTA` answer |
 | `debugDir` | — | appends adapter events to `antigravity-adapter.log` (no secrets) |
 | `features.googleSearch` | `false` | add `tools:[{googleSearch:{}}]` when a request carries no tools |
+| `features.googleSearchTool` | `true` | register the built-in `google_search` agent tool |
+| `features.searchModel` | `gemini-3.5-flash-lite` | model used for the grounded search sub-request |
 | `features.includeThoughts` | — | accepted by the endpoint but ignored (thoughts always stream) |
 | `features.defaultThinkingLevel` | — | `low`/`medium`/`high` used when the caller names no effort |
 | `features.thinkingBudgets` | `{low:1024, medium:4096, high:16384}` | token budgets for Gemini 2.5 models |
 | `features.responseMimeType` / `features.responseSchema` | — | structured output (Gemini only) |
 | `features.imageOutput` | `true` | allow image models |
-| `features.imageGen` | `true` | register the built-in `image_generate` agent tool |
+| `features.imageGen` | `true` | register the built-in `image_generate` agent tool (generation and editing) |
 | `features.imageModel` | account's `imageGenerationModelIds[0]` | override the image model used by the tool |
 | `features.imageAspectRatio` | `1:1` | default aspect ratio for image models and the tool |
 | `features.imageAspectRatios` | `['1:1','16:9','9:16','4:3','3:4']` | ratios the tool accepts |
@@ -154,6 +163,31 @@ plus image models, filtered of IDE completion routers `tab_*`, internal `chat_*`
 and reasoning efforts. The harness builds the picker from exactly that, so a new model on the
 account appears after the catalogue cache expires (or a restart).
 
+## Request shaping and retries
+
+The adapter spends the operator's personal Antigravity plan, and an agent loop can produce
+bursts no human IDE session would. Three top-level keys keep the traffic shaped like normal app
+use, which lowers the risk of the account being flagged for abuse:
+
+| Key | Default | Effect |
+|---|---|---|
+| `maxConcurrentRequests` | `2` | at most two Antigravity requests in flight; the rest queue (the queue is visible in the settings GUI) |
+| `minRequestIntervalMs` | `0` | minimum gap between two request starts in ms; raise it (e.g. `250`) for a slower, gentler cadence |
+| `rateLimitCooldownMs` | `60000` | a `429`/`QUOTA` answer pauses *all* requests; the pause honours the server's `Retry-After`/`retryDelay` but never exceeds this cap |
+
+One limiter instance is shared by model calls, `image_generate` and `google_search`, so a burst
+of parallel agent steps cannot become a burst of upstream requests.
+
+Retries are split on purpose:
+
+- **Model calls** carry no retry loop inside the adapter — `dsh-llm-retry` already repeats the
+  harness step, and retrying here as well would only double the delay and the quota cost.
+- **Tool sub-calls** (`image_generate`, `google_search`) sit outside that harness layer, so they
+  keep two internal retries for transient `429`/`503` answers.
+
+Keep the defaults unless you know why you are changing them. The quota is per account and shared
+with the IDE, and parallel bursts are exactly the pattern that looks like abuse.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -161,8 +195,12 @@ account appears after the catalogue cache expires (or a restart).
 | No Antigravity group in the picker | plugin not mounted (check the managed block, DSH logs) or credentials unavailable |
 | `AUTH` / 401 | refresh token revoked — sign in to Antigravity again |
 | `QUOTA` (HTTP 429, "exhausted your capacity … will reset after 4h") | the Antigravity account quota for that model; the reset time is in the message |
-| `RATE_LIMIT` | transient throttling; DSH retry policy repeats the step |
+| `RATE_LIMIT` | transient throttling; DSH retry policy repeats the step, and the throttle pauses further requests for `rateLimitCooldownMs` |
+| Requests feel slow while several agents run | that is the throttle queue (`maxConcurrentRequests`, `minRequestIntervalMs`) — visible in the settings GUI |
+| `google_search` is not offered to the agent | `features.googleSearchTool` is `false` (toggle it in the settings GUI or the patch) |
+| `google_search` answers without sources | the model answered from its own grounding-free knowledge; rephrase the query or check `features.searchModel` |
 | `EMPTY_RESPONSE` with a message about the image | image model refused the prompt (or RECITATION) — rephrase |
+| `EMPTY_RESPONSE` with `reference_path …` | the reference file is missing, not an image, or larger than 20 MiB |
 | `403 … (#3501) You do not have a valid license` | `userAgent` lost the `antigravity` substring |
 | `DUPLICATE_ADAPTER` | a stale `antigravity` provider route is still in the `llm-pi-ai` block — remove it |
 | Model missing after an account change | wait for `modelCacheTtlMs` or restart DSH |
@@ -184,10 +222,49 @@ model → image_generate {prompt, aspect_ratio}
 ```
 
 Parameters: `prompt` (required), `aspect_ratio` (enum of the configured ratios), `count`
-(1–4; the endpoint rejects `candidateCount > 1`, so extra images are sequential calls).
+(1–4; the endpoint rejects `candidateCount > 1`, so extra images are sequential calls) and
+`reference_path` — an existing `.png`, `.jpg`/`.jpeg` or `.webp` file (≤ 20 MiB) to **edit**
+instead of drawing from scratch. The reference image is sent as `inlineData` before the prompt:
+
+```
+user: "сделай небо на этом фото закатным"
+model → image_generate {prompt: "a sunset sky …", reference_path: "C:/lab/antigravity/media/in.png"}
+      → gemini-3.1-flash-image (image-to-image)
+      → C:\lab\antigravity\media\ag-….jpeg  +  ![…](C:/lab/antigravity/media/ag-….jpeg)
+```
+
 A refused generation comes back as HTTP 200 + empty content + `finishMessage`; the tool reports
-it as an error instead of a blank success. Image *editing* is available by attaching an image
-and choosing the image model directly in the picker (the tool is text-to-image).
+it as an error instead of a blank success. The tool always calls the built-in imageGen model, so
+it works even when the conversation itself runs on a text-only model.
+
+## Built-in web search (google_search)
+
+Grounding cannot ride along with a normal agent turn: the endpoint rejects
+`tools:[{googleSearch:{}}]` together with `functionDeclarations` (HTTP 400 — and the
+`includeServerSideToolInvocations` flag does not lift that), while every agent turn carries the
+harness tools. The plugin therefore registers a **separate** `google_search` tool that issues its
+own grounded generation with **no** function declarations:
+
+```
+user: "what changed in the latest Node.js release?"
+model → google_search {query: "Node.js latest release notes"}
+      → gemini-3.5-flash-lite with tools:[{googleSearch:{}}] (no function declarations)
+      → answer + a markdown "Sources:" list
+```
+
+- Registered by default; `features.googleSearchTool: false` removes it. The separate
+  `features.googleSearch` switch is the adapter-side "ground tool-free turns directly" flag.
+- Model: `features.searchModel`, default `gemini-3.5-flash-lite`.
+- Returns `{answer, sources[]}`; the tool result appends `[n] title — uri` lines as markdown, so
+  sources stay readable even though the chat UI does not render citation annotations.
+- The `uri` values are Google grounding redirect URLs (`vertexaisearch.cloud.google.com`), not
+  the publisher's own links; `docs/capabilities.md` records what the endpoint actually returns.
+- Sources are whatever the endpoint returned for that query: an answer the model can give from
+  its own knowledge may come back without `groundingMetadata`, and the tool result says so.
+- One query, one answer — not a research loop. Multi-step research means the agent calls the
+  tool several times; each call costs quota on the search model and has a 120 s timeout.
+- Only Gemini models ground on this endpoint (Claude/GPT-OSS silently ignore the server tool),
+  so keep a Gemini `features.searchModel`.
 
 ## Settings GUI
 

@@ -4,18 +4,22 @@
 //
 //   node plugin/test/live.mjs                            # default (cheap) suite
 //   $env:AG_MATRIX_TEST='1'; node plugin/test/live.mjs   # + model/mode matrix
-//   $env:AG_IMAGE_TEST='1'; node plugin/test/live.mjs    # + image generation/editing
+//   $env:AG_IMAGE_TEST='1'; node plugin/test/live.mjs    # + image generation
+//   $env:AG_IMAGE_TEST='1'; $env:AG_MATRIX_TEST='1'; node plugin/test/live.mjs  # everything
 //
 // Every check prints `PASS name — detail` or `FAIL name — detail`; optional checks that are
 // not enabled (or not reachable) print `SKIP name — reason` and are not counted. The process
 // exits non-zero only when a recorded check failed.
 //
-// Default mode is the cheap smoke suite. AG_MATRIX_TEST adds the per-model matrix: the Google
-// thinking tiers (level and 2.5 budget style), tool calling for each vendor, groundedSearch,
-// and throttle serialization. AG_IMAGE_TEST adds the image checks: generation, the image
-// model through the adapter with tools attached (they must be dropped), and image editing via
-// `reference_path`. One image costs ~1.5k output tokens and the image model has its own
-// quota, so image checks stay opt-in.
+// Default mode is the cheap smoke suite: catalogue/metadata, text, reasoning, tool calling and
+// replay, structured output, grounding, both agent tools, throttle/status config, errors.
+// AG_MATRIX_TEST adds the per-model matrix: the Google thinking tiers (level and the 2.5 token
+// budget style), tool calling per vendor, groundedSearch, throttle serialization, and one
+// image edit through `referencePath` using an existing image (one image of quota).
+// AG_IMAGE_TEST adds image generation, the image model through the adapter with tools attached
+// (they must be dropped) and an edit whose reference is the freshly generated image. One image
+// costs ~1.5k output tokens and the image model has its own quota, so image checks stay opt-in;
+// a QUOTA wall there is reported as SKIP, not as a product failure.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +27,8 @@ import { fileURLToPath } from 'node:url';
 import { createAntigravityClient, createTokenSource } from '../src/antigravity.mjs';
 import { AntigravityAdapter } from '../src/adapter.mjs';
 import { createImageGenerator } from '../src/imagegen.mjs';
+import { createSearchTool, SEARCH_TOOL_NAME, DEFAULT_SEARCH_MODEL } from '../src/search.mjs';
+import { createThrottle } from '../src/throttle.mjs';
 import { imageToolDefinition } from '../src/tool.mjs';
 import { createStatusService } from '../src/status.mjs';
 import { Config } from '../index.mjs';
@@ -31,6 +37,13 @@ const MEDIA_DIR = path.join(os.tmpdir(), 'dsh-antigravity-live-test');
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MATRIX = process.env.AG_MATRIX_TEST === '1';
 const IMAGE_TEST = process.env.AG_IMAGE_TEST === '1';
+const PLUGIN_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'plugin', 'package.json'), 'utf8')).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 const baseConfig = {
   credentialTarget: 'gemini:antigravity',
   upstreamHost: 'https://daily-cloudcode-pa.googleapis.com',
@@ -42,7 +55,9 @@ const baseConfig = {
 const tokens = createTokenSource({ ...baseConfig, log: (message) => console.error('[token] ' + message) });
 const client = createAntigravityClient({ ...baseConfig, tokens, log: (message) => console.error('[api] ' + message) });
 const log = (message) => console.error('[adapter] ' + message);
-const adapter = new AntigravityAdapter({ client, config: baseConfig, log, getAttachments: () => undefined });
+// Same throttle the plugin builds in index.mjs, so the live suite exercises production shaping.
+const throttle = createThrottle({ maxConcurrent: 2, minIntervalMs: 0, cooldownMs: 60_000, log });
+const adapter = new AntigravityAdapter({ client, config: baseConfig, log, throttle, getAttachments: () => undefined });
 
 const results = [];
 const skips = [];
@@ -96,6 +111,7 @@ async function withFeatures(features, fn) {
     client,
     config: { ...baseConfig, features: { ...baseConfig.features, ...features } },
     log,
+    throttle,
     getAttachments: () => undefined,
   });
   return fn(scoped);
@@ -114,8 +130,9 @@ async function matrixCase(name, run) {
 }
 
 /**
- * Client wrapper that counts how many upstream response bodies are being consumed at once.
- * With `maxConcurrentRequests: 1` the adapter's throttle must keep that peak at 1.
+ * Client wrapper that counts concurrent `openStream` calls (a request is "in flight" from the
+ * call to the point the response headers arrive — exactly the window the throttle guards).
+ * With maxConcurrentRequests=1 the peak must stay at 1.
  */
 function concurrentProbeClient(base) {
   let active = 0;
@@ -125,32 +142,30 @@ function concurrentProbeClient(base) {
     client: {
       ...base,
       async openStream(options) {
-        const response = await base.openStream(options);
-        const source = response.body;
-        const body = (async function* instrumented() {
-          active++;
-          peak = Math.max(peak, active);
-          try {
-            for await (const chunk of source) yield chunk;
-          } finally {
-            active--;
-          }
-        })();
-        return {
-          ok: response.ok,
-          status: response.status,
-          headers: response.headers,
-          text: () => response.text(),
-          body,
-        };
+        active++;
+        peak = Math.max(peak, active);
+        try {
+          return await base.openStream(options);
+        } finally {
+          active--;
+        }
       },
     },
   };
 }
 
-/** First usable reference image for the editing check: repo fixture, then a fresh render. */
+/** Existing reference image for editing: a fresh render first, then media/, then the fixture. */
 function referenceImage(generated) {
-  const candidates = [path.join(REPO_ROOT, '.tmp', 'image-test.png'), ...generated];
+  const candidates = [...generated];
+  try {
+    const mediaDir = path.join(REPO_ROOT, 'media');
+    if (fs.existsSync(mediaDir)) {
+      for (const name of fs.readdirSync(mediaDir).sort().reverse()) {
+        if (/\.(jpe?g|png|webp)$/i.test(name)) candidates.push(path.join(mediaDir, name));
+      }
+    }
+  } catch { /* media dir is optional */ }
+  candidates.push(path.join(REPO_ROOT, '.tmp', 'image-test.png'));
   for (const file of candidates) {
     try {
       if (file && fs.existsSync(file) && fs.statSync(file).size > 100) return file;
@@ -170,7 +185,7 @@ function imageFailure(name, error) {
 }
 
 /** Per-model matrix: thinking styles, vendor tool calling, groundedSearch, throttle. */
-async function matrixSection(chat, tools) {
+async function matrixSection(chat, tools, model) {
   console.log('\n--- model matrix (AG_MATRIX_TEST=1) ---');
   const available = new Set(chat.map((entry) => entry.id));
   const need = (id, label) => {
@@ -258,50 +273,42 @@ async function matrixSection(chat, tools) {
   }
 
   // Grounded sub-request used by the google_search tool (runs without functionDeclarations).
-  let searchModule = null;
-  try { searchModule = await import('../src/search.mjs'); } catch { /* reported by the default check */ }
-  const searchModel = available.has('gemini-3.5-flash-lite') ? 'gemini-3.5-flash-lite'
+  const searchModel = available.has(DEFAULT_SEARCH_MODEL) ? DEFAULT_SEARCH_MODEL
     : (available.has('gemini-3-flash') ? 'gemini-3-flash' : chat[0].id);
-  if (searchModule && typeof searchModule.groundedSearch === 'function') {
-    await matrixCase('matrix groundedSearch', async () => {
-      const found = await searchModule.groundedSearch({
+  await matrixCase('matrix groundedSearch', async () => {
+    const found = await import('../src/search.mjs')
+      .then((module) => module.groundedSearch({
         client, model: searchModel,
-        query: 'What were the biggest technology news headlines this week?',
-        signal: AbortSignal.timeout(180_000),
-      });
-      const sources = Array.isArray(found && found.sources) ? found.sources : [];
-      if (!found || !found.text || sources.length === 0) {
-        throw new Error('no grounded sources (model=' + searchModel + ', sources=' + sources.length +
-          ', text=' + JSON.stringify(String((found && found.text) || '').slice(0, 80)) + ')');
-      }
-      return 'model=' + searchModel + ' sources=' + sources.length +
-        ' first=' + JSON.stringify(String((sources[0] && (sources[0].uri || sources[0].title)) || '')).slice(0, 90);
-    });
-  } else {
-    skip('matrix groundedSearch', 'src/search.mjs does not export groundedSearch');
-  }
+        query: 'What notable AI model releases happened this month?',
+        signal: AbortSignal.timeout(180_000), throttle,
+      }));
+    const sources = Array.isArray(found && found.sources) ? found.sources : [];
+    if (!found || !found.text || sources.length === 0) {
+      throw new Error('no grounded sources (model=' + searchModel + ', sources=' + sources.length +
+        ', text=' + JSON.stringify(String((found && found.text) || '').slice(0, 80)) + ')');
+    }
+    return 'model=' + searchModel + ' sources=' + sources.length +
+      ' first=' + JSON.stringify(String((sources[0] && (sources[0].title || sources[0].uri)) || '')).slice(0, 90);
+  });
 
-  // Throttle: two parallel streams with maxConcurrentRequests=1 must not overlap upstream.
-  if (need(process.env.AG_MODEL || 'gemini-3-flash', 'matrix throttle (maxConcurrentRequests=1)')) {
-    await matrixCase('matrix throttle (maxConcurrentRequests=1)', async () => {
-      const probe = concurrentProbeClient(client);
-      const throttled = new AntigravityAdapter({
-        client: probe.client,
-        config: { ...baseConfig, maxConcurrentRequests: 1, minRequestIntervalMs: 0, rateLimitCooldownMs: 60_000 },
-        log,
-        getAttachments: () => undefined,
-      });
-      const options = {
-        provider: 'antigravity', model: process.env.AG_MODEL || 'gemini-3-flash',
-        messages: user('Reply with exactly one word: OK'), maxTokens: 512, reasoningEffort: 'low',
-      };
-      await Promise.all([collect(throttled, options), collect(throttled, options)]);
-      const peak = probe.peak();
-      if (peak <= 0) throw new Error('the instrumented client never opened an upstream stream');
-      if (peak > 1) throw new Error('streams overlapped (peak upstream concurrency ' + peak + ') despite maxConcurrentRequests=1');
-      return 'peak upstream concurrency=' + peak + ' for 2 parallel streams';
+  // Throttle: two parallel streams with maxConcurrent=1 must not overlap upstream calls.
+  await matrixCase('matrix throttle (maxConcurrent=1)', async () => {
+    const probe = concurrentProbeClient(client);
+    const limiter = createThrottle({ maxConcurrent: 1, minIntervalMs: 0, cooldownMs: 60_000, log });
+    const throttled = new AntigravityAdapter({
+      client: probe.client, config: baseConfig, log, throttle: limiter,
+      getAttachments: () => undefined,
     });
-  }
+    const options = {
+      provider: 'antigravity', model,
+      messages: user('Reply with exactly one word: OK'), maxTokens: 512, reasoningEffort: 'low',
+    };
+    await Promise.all([collect(throttled, options), collect(throttled, options)]);
+    const peak = probe.peak();
+    if (peak <= 0) throw new Error('the instrumented client never opened an upstream stream');
+    if (peak > 1) throw new Error('streams overlapped (peak upstream concurrency ' + peak + ') despite maxConcurrent=1');
+    return 'peak upstream concurrency=' + peak + ' for 2 parallel streams; state=' + JSON.stringify(limiter.state());
+  });
 
   // 429/cooldown is only covered if the account happens to hit it; never forced.
   const limited = failuresSeen.find((error) => error && (error.code === 'RATE_LIMIT' || error.code === 'QUOTA'));
@@ -416,65 +423,65 @@ async function main() {
       ' text=' + JSON.stringify(grounded.text.slice(0, 100)));
   });
 
-  // 7. the agent-facing tools: image_generate gains image editing, google_search is new
-  const generator = createImageGenerator({ client, adapter, config: baseConfig, log });
+  // 7. adapter.lastError is filled for the GUI after a rejected request. An invalid Gemini
+  // responseSchema type is a cheap, model-agnostic 400: no generation, no quota spent.
+  await withFeatures({ responseSchema: { type: 'BANANA' } }, async (scoped) => {
+    let caught = null;
+    try {
+      for await (const chunk of scoped.stream({
+        provider: 'antigravity', model, messages: user('Say hi'), maxTokens: 64, reasoningEffort: 'low',
+      })) { void chunk; }
+    } catch (error) {
+      caught = error;
+    }
+    record('adapter.lastError after a refused request',
+      Boolean(scoped.lastError && scoped.lastError.code === 'INVALID_REQUEST' && /400/.test(scoped.lastError.message)),
+      'caught=' + (caught ? describeError(caught) : 'none') + ' lastError=' + JSON.stringify(scoped.lastError));
+  });
+
+  // 8. the agent-facing tools: image_generate gains image editing, google_search is new
+  const generator = createImageGenerator({ client, adapter, config: baseConfig, log, throttle });
   const imageTool = imageToolDefinition({ generator, config: baseConfig, log });
   const imageParams = (imageTool && imageTool.parameters && imageTool.parameters.properties) || {};
   record('image_generate reference_path parameter', Boolean(imageParams.reference_path && imageParams.reference_path.type === 'string'),
     'params=' + Object.keys(imageParams).join(','));
 
-  let searchModule = null;
-  let searchTool = null;
+  const searchTool = createSearchTool({ client, config: baseConfig, log, throttle });
+  const searchParams = (searchTool.parameters && searchTool.parameters.properties) || {};
+  record('google_search tool definition',
+    SEARCH_TOOL_NAME === 'google_search' && searchTool.name === 'google_search' &&
+      Boolean(searchParams.query) && typeof searchTool.execute === 'function' &&
+      searchTool.output && searchTool.output.schema && searchTool.output.schema.properties.answer,
+    'name=' + searchTool.name + ' params=' + Object.keys(searchParams).join(',') +
+    ' defaultsTo=' + DEFAULT_SEARCH_MODEL);
+
   try {
-    searchModule = await import('../src/search.mjs');
+    const found = await searchTool.execute(
+      { query: 'What are the biggest technology news headlines this week?' },
+      { signal: AbortSignal.timeout(180_000) },
+    );
+    const sources = Array.isArray(found && found.sources) ? found.sources : [];
+    const answer = String((found && found.answer) || '');
+    record('google_search tool (grounded)', answer.length > 0 && sources.length > 0,
+      'answer=' + JSON.stringify(answer.replace(/\s+/g, ' ').slice(0, 80)) +
+      ' sources=' + sources.length +
+      (sources[0] ? ' first=' + JSON.stringify(String(sources[0].title || sources[0].uri || '')).slice(0, 90) : ''));
   } catch (error) {
-    failuresSeen.push(error);
-    record('google_search tool definition', false, 'cannot import ../src/search.mjs: ' + describeError(error));
-  }
-  if (searchModule) {
-    try {
-      searchTool = searchModule.createSearchTool({ client, adapter, config: baseConfig, log });
-      const parameters = (searchTool && searchTool.parameters) || {};
-      const properties = parameters.properties || {};
-      const shapeOk = searchModule.SEARCH_TOOL_NAME === 'google_search' &&
-        searchTool.name === 'google_search' &&
-        Boolean(properties.query) &&
-        typeof searchTool.execute === 'function';
-      record('google_search tool definition', shapeOk,
-        'name=' + String(searchTool && searchTool.name) +
-        ' SEARCH_TOOL_NAME=' + String(searchModule.SEARCH_TOOL_NAME) +
-        ' params=' + Object.keys(properties).join(',') +
-        ' execute=' + typeof (searchTool && searchTool.execute));
-    } catch (error) {
+    // A quota wall here is a real outcome, not a blocker: report and carry on.
+    if (error && (error.code === 'QUOTA' || error.code === 'RATE_LIMIT')) {
+      skip('google_search tool (grounded)', 'quota/rate limit: ' + describeError(error));
+    } else {
       failuresSeen.push(error);
-      record('google_search tool definition', false, describeError(error));
+      record('google_search tool (grounded)', false, describeError(error));
     }
   }
 
-  if (searchTool) {
-    try {
-      const query = 'What are the biggest technology news headlines this week?';
-      const found = await searchTool.execute({ query }, { signal: AbortSignal.timeout(180_000) });
-      const sources = Array.isArray(found && found.sources) ? found.sources : [];
-      record('google_search tool (grounded)', Boolean(found && found.text && sources.length > 0),
-        'text=' + JSON.stringify(String((found && found.text) || '').replace(/\s+/g, ' ').slice(0, 80)) +
-        ' sources=' + sources.length +
-        (sources[0] ? ' first=' + JSON.stringify(String(sources[0].uri || sources[0].title || '')).slice(0, 90) : ''));
-    } catch (error) {
-      // A quota wall here is a real outcome, not a blocker: report and carry on.
-      if (error && (error.code === 'QUOTA' || error.code === 'RATE_LIMIT')) {
-        skip('google_search tool (grounded)', 'quota/rate limit: ' + describeError(error));
-      } else {
-        failuresSeen.push(error);
-        record('google_search tool (grounded)', false, describeError(error));
-      }
-    }
-  }
-
-  // 8. throttle config: explicit keys are accepted and the documented defaults are applied
+  // 9. config keys: throttle (top level) and search features. `Config` requires a positive
+  // model cache TTL, while this suite keeps 0 so every check sees a fresh catalogue.
+  const configForValidation = { ...baseConfig, modelCacheTtlMs: 600_000 };
   let validated = {};
   try {
-    validated = Config['~standard'].validate({ ...baseConfig });
+    validated = Config['~standard'].validate({ ...configForValidation });
   } catch (error) {
     validated = { issues: [{ message: 'Config.validate threw: ' + describeError(error) }] };
   }
@@ -492,59 +499,70 @@ async function main() {
   let overridden = {};
   try {
     overridden = Config['~standard'].validate({
-      ...baseConfig,
+      ...configForValidation,
       maxConcurrentRequests: 4,
       minRequestIntervalMs: 50,
       rateLimitCooldownMs: 90_000,
+      features: { ...baseConfig.features, googleSearchTool: false, searchModel: 'gemini-3-flash' },
     });
   } catch (error) {
     overridden = { issues: [{ message: 'Config.validate threw: ' + describeError(error) }] };
   }
-  const throttleValue = overridden.value || {};
+  const overrideValue = overridden.value || {};
+  const overrideFeatures = overrideValue.features || {};
   const overrideIssues = Array.isArray(overridden.issues) ? overridden.issues : [];
-  record('throttle config overrides', overrideIssues.length === 0 &&
-      throttleValue.maxConcurrentRequests === 4 &&
-      throttleValue.minRequestIntervalMs === 50 &&
-      throttleValue.rateLimitCooldownMs === 90_000,
-    'maxConcurrentRequests=' + throttleValue.maxConcurrentRequests +
-    ' minRequestIntervalMs=' + throttleValue.minRequestIntervalMs +
-    ' rateLimitCooldownMs=' + throttleValue.rateLimitCooldownMs +
+  record('throttle/search config overrides', overrideIssues.length === 0 &&
+      overrideValue.maxConcurrentRequests === 4 &&
+      overrideValue.minRequestIntervalMs === 50 &&
+      overrideValue.rateLimitCooldownMs === 90_000 &&
+      overrideFeatures.googleSearchTool === false &&
+      overrideFeatures.searchModel === 'gemini-3-flash',
+    'maxConcurrentRequests=' + overrideValue.maxConcurrentRequests +
+    ' minRequestIntervalMs=' + overrideValue.minRequestIntervalMs +
+    ' rateLimitCooldownMs=' + overrideValue.rateLimitCooldownMs +
+    ' googleSearchTool=' + overrideFeatures.googleSearchTool +
+    ' searchModel=' + overrideFeatures.searchModel +
     (overrideIssues.length > 0 ? ' issues=' + overrideIssues.map((issue) => issue.message).slice(0, 2).join('; ') : ''));
 
-  // 9. settings status snapshot: version, tool list and throttle state are the new fields
+  // 10. settings status snapshot: plugin.{version,tools,throttle,lastError} and limits.*
   try {
     const statusService = createStatusService({
       client,
       adapter,
       config: { ...baseConfig, ...throttleDefaults },
       log,
+      meta: () => ({
+        version: PLUGIN_VERSION,
+        tools: ['image_generate', 'google_search'],
+        throttle: throttle.state(),
+        lastError: adapter.lastError,
+      }),
     });
     const snapshot = await statusService.snapshot({ refresh: true });
-    const version = typeof snapshot.version === 'string'
-      ? snapshot.version
-      : (snapshot.plugin && typeof snapshot.plugin.version === 'string' ? snapshot.plugin.version : undefined);
-    const tools = Array.isArray(snapshot.tools) ? snapshot.tools
-      : (Array.isArray(snapshot.registeredTools) ? snapshot.registeredTools : null);
-    const throttle = (snapshot.throttle && typeof snapshot.throttle === 'object') ? snapshot.throttle
-      : ((snapshot.throttling && typeof snapshot.throttling === 'object') ? snapshot.throttling : null);
-    const toolNames = tools
-      ? tools.map((entry) => (typeof entry === 'string' ? entry : (entry && (entry.name || entry.id)))).filter(Boolean)
-      : [];
-    record('status snapshot (version/tools/throttle)', Boolean(version) && toolNames.length > 0 && Boolean(throttle),
-      'version=' + String(version) +
+    const plugin = snapshot.plugin || {};
+    const toolNames = Array.isArray(plugin.tools) ? plugin.tools : [];
+    const limits = snapshot.limits || {};
+    record('status snapshot (version/tools/throttle/limits)',
+      Boolean(snapshot.ok) && plugin.version === PLUGIN_VERSION && toolNames.length >= 2 &&
+        Boolean(plugin.throttle) && typeof plugin.throttle.maxConcurrent === 'number' &&
+        Boolean(limits) && limits.maxConcurrentRequests === 2 && 'lastError' in plugin,
+      'version=' + String(plugin.version) +
+      ' tools=' + toolNames.join(',') +
+      ' throttle=' + JSON.stringify(plugin.throttle).slice(0, 140) +
+      ' limits=' + JSON.stringify(limits) +
       ' models=' + (Array.isArray(snapshot.models) ? snapshot.models.length : 'missing') +
-      ' tools=' + (toolNames.length > 0 ? toolNames.join(',') : 'missing') +
-      ' throttle=' + JSON.stringify(throttle).slice(0, 120));
+      ' lastError=' + JSON.stringify(plugin.lastError || null).slice(0, 120));
   } catch (error) {
     failuresSeen.push(error);
-    record('status snapshot (version/tools/throttle)', false, describeError(error));
+    record('status snapshot (version/tools/throttle/limits)', false, describeError(error));
   }
 
-  // 10. built-in image generation and editing (the same generator the image_generate tool uses)
+  // 11. images. Order matters for quota: in the full run generation and the edit (using the
+  // fresh image as reference) go first, the more redundant adapter-path check last.
+  const generated = [];
   if (IMAGE_TEST && image) {
-    const generated = [];
     try {
-      const drawn = await generator.generate({ prompt: 'A photo of a cat sitting on a windowsill.', aspectRatio: '16:9' });
+      const drawn = await generator.generate({ prompt: 'A red apple on a white table, soft studio light.', aspectRatio: '16:9' });
       const saved = drawn.images[0];
       const bytes = saved ? fs.statSync(saved.path).size : 0;
       if (saved) generated.push(saved.path);
@@ -553,7 +571,37 @@ async function main() {
     } catch (error) {
       imageFailure('image generation (imageGen)', error);
     }
+  } else if (IMAGE_TEST) {
+    skip('image checks', 'the account advertises no image model');
+  } else if (!MATRIX) {
+    console.log('SKIP image checks (set AG_IMAGE_TEST=1 to spend image quota)');
+  }
 
+  // Image editing via reference_path: the full image run edits its fresh render, matrix mode
+  // edits an existing image (one image of quota), so the path is covered in both runs.
+  if ((IMAGE_TEST || MATRIX) && image) {
+    const editReference = referenceImage(generated);
+    if (editReference) {
+      try {
+        const edited = await generator.generate({
+          prompt: 'Repaint this picture as a watercolor painting; keep the subject and composition.',
+          referencePath: editReference,
+          count: 1,
+        });
+        const saved = edited.images[0];
+        const bytes = saved ? fs.statSync(saved.path).size : 0;
+        record('image editing (reference_path)', bytes > 1000,
+          'reference=' + path.basename(editReference) +
+          (saved ? ' file=' + saved.path + ' (' + bytes + ' bytes)' : ' no image'));
+      } catch (error) {
+        imageFailure('image editing (reference_path)', error);
+      }
+    } else {
+      skip('image editing (reference_path)', 'no reference image available (no media/ or .tmp fixture)');
+    }
+  }
+
+  if (IMAGE_TEST && image) {
     // The image model is a one-shot generator: the adapter must drop the agent's declarations.
     try {
       const picture = await collect(adapter, {
@@ -571,36 +619,12 @@ async function main() {
     } catch (error) {
       imageFailure('image model via adapter (tools dropped)', error);
     }
-
-    const reference = referenceImage(generated);
-    if (reference) {
-      try {
-        const edited = await generator.generate({
-          prompt: 'Repaint this picture as a watercolor painting; keep the subject and composition.',
-          referencePath: reference,
-          count: 1,
-        });
-        const saved = edited.images[0];
-        const bytes = saved ? fs.statSync(saved.path).size : 0;
-        record('image editing (reference_path)', bytes > 1000,
-          'reference=' + path.basename(reference) +
-          (saved ? ' file=' + saved.path + ' (' + bytes + ' bytes)' : ' no image'));
-      } catch (error) {
-        imageFailure('image editing (reference_path)', error);
-      }
-    } else {
-      skip('image editing (reference_path)', 'no reference image available (no .tmp/image-test.png and no generated image)');
-    }
-  } else if (IMAGE_TEST) {
-    skip('image checks', 'the account advertises no image model');
-  } else {
-    console.log('SKIP image checks (set AG_IMAGE_TEST=1 to spend image quota)');
   }
 
-  // 11. model/mode matrix (opt-in)
-  if (MATRIX) await matrixSection(chat, tools);
+  // 12. model/mode matrix (opt-in)
+  if (MATRIX) await matrixSection(chat, tools, model);
 
-  // 12. unknown model failure
+  // 13. unknown model failure
   let unknown = null;
   try { await adapter.resolveModel('antigravity', 'definitely-not-a-model'); } catch (error) { unknown = error; }
   record('unknown model error', Boolean(unknown && unknown.code === 'UNKNOWN_MODEL'), unknown ? unknown.code : 'no error');

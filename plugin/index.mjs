@@ -148,8 +148,8 @@ export const Config = {
         }
       }
       for (const key of ['requestTimeoutMs', 'modelCacheTtlMs', 'maxConcurrentRequests']) {
-        if (raw[key] !== undefined && !isPositiveInt(raw[key])) {
-          issues.push({ message: key + ' must be a positive integer', path: [key] });
+        if (raw[key] !== undefined && !(key === 'modelCacheTtlMs' ? isNonNegativeInt(raw[key]) : isPositiveInt(raw[key]))) {
+          issues.push({ message: key + ' must be a ' + (key === 'modelCacheTtlMs' ? 'non-negative' : 'positive') + ' integer', path: [key] });
         }
       }
       for (const key of ['minRequestIntervalMs', 'rateLimitCooldownMs']) {

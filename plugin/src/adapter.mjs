@@ -115,8 +115,9 @@ export class AntigravityAdapter {
   /* ------------------------------------------------------------- catalogue */
 
   async loadCatalogue({ force = false } = {}) {
-    const ttl = this.config.modelCacheTtlMs || 600_000;
-    if (!force && this.catalogue && Date.now() - this.catalogueAt < ttl) return this.catalogue;
+    // 0 means "no cache": every catalogue read goes to the endpoint (handy for debugging).
+    const ttl = Number.isFinite(this.config.modelCacheTtlMs) ? this.config.modelCacheTtlMs : 600_000;
+    if (!force && ttl > 0 && this.catalogue && Date.now() - this.catalogueAt < ttl) return this.catalogue;
     if (!this.catalogueRequest) {
       this.catalogueRequest = this.client.fetchModels()
         .then(({ models, defaultModelId }) => {
