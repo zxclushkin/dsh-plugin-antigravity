@@ -1,0 +1,104 @@
+// language: JavaScript (ESM), file: src/tool.mjs, runtime: Node >= 20 (DSH host)
+// Registers the built-in `image_generate` tool with the harness tool registry, so any agent
+// model (Gemini, Claude, GPT-OSS) can draw a picture mid-conversation — the same way the
+// Antigravity IDE's agent uses its built-in image generation.
+//
+// The registry accepts a plain definition: { name, description, parameters, output:{schema,render},
+// execute }. Schemas must stay inside the harness JSON-Schema subset
+// (type/oneOf/properties/required/additionalProperties/items/enum/const + annotations).
+import { imageMarkdown } from './imagegen.mjs';
+
+export const IMAGE_TOOL_NAME = 'image_generate';
+
+/** Tool definition for the harness registry. */
+export function imageToolDefinition({ generator, config, log }) {
+  const aspectRatios = generator.aspectRatios;
+  return {
+    name: IMAGE_TOOL_NAME,
+    description:
+      'Generate an image with the built-in image generation model (Google Antigravity imageGen) '
+      + 'and save it as a file the user can see inline. Use it whenever the user asks for a picture, '
+      + 'illustration, icon, diagram or photo. It returns the saved absolute paths; refer to them in '
+      + 'your final answer as markdown images.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'What to draw: subject, style, colors, composition. Be descriptive.',
+        },
+        aspect_ratio: {
+          type: 'string',
+          enum: aspectRatios,
+          description: 'Canvas aspect ratio; defaults to ' + (config.features?.imageAspectRatio || '1:1') + '.',
+        },
+        count: {
+          type: 'integer',
+          description: 'How many images to generate, 1 to 4 (default 1).',
+        },
+      },
+      required: ['prompt'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          images: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string' },
+                mime_type: { type: 'string' },
+                bytes: { type: 'integer' },
+              },
+              required: ['path'],
+            },
+          },
+          text: { type: 'string' },
+        },
+        required: ['images'],
+      },
+      render(_args, value) {
+        const blocks = [];
+        const note = String(value.text || '').trim();
+        if (note) blocks.push({ type: 'text', text: note });
+        for (const image of value.images || []) {
+          blocks.push({ type: 'text', text: imageMarkdown(image.path) });
+        }
+        const saved = (value.images || []).map((image) => image.path).join(', ');
+        blocks.push({
+          type: 'text',
+          text: 'Saved image file' + (value.images.length > 1 ? 's' : '') + ': ' + saved
+            + '\nUse these absolute paths in your answer.',
+        });
+        return blocks;
+      },
+    },
+    async execute(args, exec) {
+      log('image_generate: ' + JSON.stringify(args).slice(0, 200));
+      const result = await generator.generate({
+        prompt: args.prompt,
+        aspectRatio: args.aspect_ratio,
+        count: args.count,
+        signal: exec && exec.signal,
+      });
+      return {
+        images: result.images.map((image) => ({
+          path: image.path,
+          mime_type: image.mimeType,
+          bytes: image.bytes,
+        })),
+        ...(result.text ? { text: result.text } : {}),
+      };
+    },
+  };
+}
+
+/** Register the image tool and return the registry disposer. */
+export function registerImageTool(ctx, options) {
+  return ctx.tools.register(imageToolDefinition(options));
+}

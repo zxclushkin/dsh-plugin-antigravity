@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-antigravity",
-  "version": "0.2.0",
-  "description": "Google Antigravity model provider for DeepSeek Harness: a native LLM adapter that reuses the credentials of an installed Antigravity app (Gemini, Claude, GPT-OSS, image generation) without any local HTTP gateway.",
+  "version": "0.3.0",
+  "description": "Google Antigravity model provider for DeepSeek Harness: a native LLM adapter plus a built-in image_generate tool that reuses the credentials of an installed Antigravity app (Gemini, Claude, GPT-OSS, image generation).",
   "type": "module",
   "main": "index.mjs",
   "exports": {

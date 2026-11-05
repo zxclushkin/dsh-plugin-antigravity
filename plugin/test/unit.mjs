@@ -3,6 +3,7 @@
 // model metadata, error classification. No network, no Antigravity installation.
 //   node plugin/test/unit.mjs
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { apply, Config, inject, name } from '../index.mjs';
 import { toModelInfo, prettyModelName, AntigravityAdapter } from '../src/adapter.mjs';
 import {
@@ -10,6 +11,8 @@ import {
   decodeToolCallId, encodeToolCallId, groundingText, mapFinishReason, mapUsage,
 } from '../src/gemini.mjs';
 import { AntigravityError, httpError, transportError } from '../src/errors.mjs';
+import { createImageGenerator, imageMarkdown } from '../src/imagegen.mjs';
+import { imageToolDefinition, IMAGE_TOOL_NAME } from '../src/tool.mjs';
 
 let passed = 0;
 function check(label, fn) {
@@ -37,7 +40,7 @@ async function checkAsync(label, fn) {
 
 check('plugin exports name/inject/Config/apply', () => {
   assert.equal(typeof name, 'string');
-  assert.deepEqual(inject, ['llm']);
+  assert.deepEqual(inject, ['llm', 'tools']);
   assert.equal(typeof apply, 'function');
   assert.equal(Config['~standard'].version, 1);
 });
@@ -361,6 +364,89 @@ await checkAsync('listModels and resolveModel expose the catalogue', async () =>
   const prepared = await adapter.prepareCall('antigravity', 'gemini-3-flash');
   assert.equal(prepared.model.id, 'gemini-3-flash');
   assert.equal(typeof prepared.stream, 'function');
+});
+
+/* ------------------------------------------------------------ image tool */
+
+check('image tool definition fits the harness schema subset', () => {
+  const generator = { aspectRatios: ['1:1', '16:9'] };
+  const tool = imageToolDefinition({ generator, config: { features: {} }, log: () => {} });
+  assert.equal(tool.name, IMAGE_TOOL_NAME);
+  assert.equal(tool.parameters.type, 'object');
+  assert.deepEqual(tool.parameters.required, ['prompt']);
+  assert.deepEqual(tool.parameters.properties.aspect_ratio.enum, ['1:1', '16:9']);
+  assert.ok(tool.parameters.properties.prompt.description);
+  assert.equal(typeof tool.output.render, 'function');
+  assert.equal(tool.output.schema.type, 'object');
+  // The registry subset is type/oneOf/properties/required/additionalProperties/items/enum/const.
+  const allowed = new Set(['type', 'oneOf', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'description', 'title']);
+  const walk = (node) => {
+    for (const key of Object.keys(node)) assert.ok(allowed.has(key), 'unsupported schema keyword ' + key);
+    for (const child of Object.values(node.properties || {})) walk(child);
+    if (node.items) walk(node.items);
+  };
+  walk(tool.parameters);
+  walk(tool.output.schema);
+  const blocks = tool.output.render({}, { images: [{ path: 'C:/tmp/a.png' }], text: 'a cat' });
+  const text = blocks.map((block) => block.text).join('\n');
+  assert.match(text, /a cat/);
+  assert.match(text, /!\[a\.png\]\(C:\/tmp\/a\.png\)/);
+  assert.match(text, /C:\/tmp\/a\.png/);
+});
+
+function imageStub(events) {
+  return {
+    host: 'stub',
+    fetchModels: async () => ({ models: {}, imageModels: { 'gemini-3.1-flash-image': {} }, defaultModelId: null }),
+    async openStream() { return { ok: true, status: 200, body: {} }; },
+    async *streamEvents() { for (const event of events) yield event; },
+  };
+}
+
+await checkAsync('image generator saves the generated image', async () => {
+  const dir = 'C:/lab/antigravity/.tmp/test-imagegen';
+  const events = [
+    { type: 'text', text: 'Here is a cat.' },
+    { type: 'media', part: { inlineData: { mimeType: 'image/jpeg', data: Buffer.from('jpegbytes').toString('base64') } } },
+    { type: 'candidate', candidate: { finishReason: 'STOP' } },
+  ];
+  const generator = createImageGenerator({
+    client: imageStub(events),
+    adapter: { loadCatalogue: async () => ({ imageModels: { 'gemini-3.1-flash-image': {} } }) },
+    config: { features: { mediaOutputDir: dir } },
+    log: () => {},
+  });
+  const result = await generator.generate({ prompt: 'a cat', aspectRatio: '16:9' });
+  assert.equal(result.images.length, 1);
+  assert.equal(result.images[0].mimeType, 'image/jpeg');
+  assert.ok(fs.existsSync(result.images[0].path));
+  assert.ok(result.images[0].bytes > 0);
+  assert.equal(result.text, 'Here is a cat.');
+  const basename = result.images[0].path.split(/[\\/]/).pop();
+  assert.equal(imageMarkdown(result.images[0].path),
+    '![' + basename + '](' + result.images[0].path.replace(/\\/g, '/') + ')');
+});
+
+await checkAsync('image refusal is reported as a failure', async () => {
+  const generator = createImageGenerator({
+    client: imageStub([{ type: 'finishMessage', message: 'Unable to show the generated image.' }]),
+    adapter: { loadCatalogue: async () => ({ imageModels: { 'gemini-3.1-flash-image': {} } }) },
+    config: { features: { mediaOutputDir: 'C:/lab/antigravity/.tmp/test-imagegen' } },
+    log: () => {},
+  });
+  await assert.rejects(() => generator.generate({ prompt: 'a cat' }), (error) => {
+    assert.equal(error.code, 'EMPTY_RESPONSE');
+    assert.match(error.message, /Unable to show/);
+    return true;
+  });
+  const badRatio = createImageGenerator({
+    client: imageStub([]),
+    adapter: { loadCatalogue: async () => ({ imageModels: {} }) },
+    config: { features: {} },
+    log: () => {},
+  });
+  await assert.rejects(() => badRatio.generate({ prompt: 'x', aspectRatio: '7:3' }), /unsupported aspect ratio/);
+  await assert.rejects(() => badRatio.generate({ prompt: '  ' }), /must not be empty/);
 });
 
 console.log('\n' + passed + ' checks passed');

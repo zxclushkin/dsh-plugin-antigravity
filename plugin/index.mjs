@@ -11,11 +11,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createAntigravityClient, createTokenSource } from './src/antigravity.mjs';
 import { AntigravityAdapter } from './src/adapter.mjs';
+import { createImageGenerator, DEFAULT_ASPECT_RATIOS } from './src/imagegen.mjs';
+import { registerImageTool } from './src/tool.mjs';
 
 export const name = 'antigravity-llm';
 
-/** The harness LLM registry must exist before the adapter can register. */
-export const inject = ['llm'];
+/** The harness LLM and tool registries must exist before this plugin can register. */
+export const inject = ['llm', 'tools'];
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isBool = (value) => typeof value === 'boolean';
@@ -32,9 +34,12 @@ const FEATURE_KEYS = new Set([
   'defaultThinkingLevel', 'thinkingBudgets', 'responseMimeType', 'responseSchema',
   'imageOutput', 'imageAspectRatio', 'imageMaxBytes', 'mediaOutputDir', 'safetySettings',
   'maxOutputTokensCap',
+  // built-in image generation tool
+  'imageGen', 'imageModel', 'imageAspectRatios', 'imageMaxOutputTokens',
 ]);
-const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput'];
+const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput', 'imageGen'];
 const THINKING_LEVELS = ['low', 'medium', 'high'];
+const IMAGE_RATIOS = DEFAULT_ASPECT_RATIOS;
 
 function validateFeatures(raw, issues) {
   const out = {};
@@ -74,17 +79,29 @@ function validateFeatures(raw, issues) {
       }
     }
   }
-  for (const key of ['responseMimeType', 'imageAspectRatio', 'mediaOutputDir']) {
+  for (const key of ['responseMimeType', 'imageAspectRatio', 'mediaOutputDir', 'imageModel']) {
     if (raw[key] !== undefined) {
       if (!isStr(raw[key])) issues.push({ message: 'features.' + key + ' must be a non-empty string', path: ['features', key] });
       else out[key] = raw[key];
     }
   }
-  for (const key of ['imageMaxBytes', 'maxOutputTokensCap']) {
+  for (const key of ['imageMaxBytes', 'maxOutputTokensCap', 'imageMaxOutputTokens']) {
     if (raw[key] !== undefined) {
       if (!isNonNegativeInt(raw[key])) issues.push({ message: 'features.' + key + ' must be a non-negative integer', path: ['features', key] });
       else out[key] = raw[key];
     }
+  }
+  if (raw.imageAspectRatios !== undefined) {
+    if (!Array.isArray(raw.imageAspectRatios) || raw.imageAspectRatios.length === 0 ||
+        raw.imageAspectRatios.some((ratio) => !isStr(ratio))) {
+      issues.push({ message: 'features.imageAspectRatios must be a non-empty array of strings', path: ['features', 'imageAspectRatios'] });
+    } else {
+      out.imageAspectRatios = [...raw.imageAspectRatios];
+    }
+  }
+  if (out.imageAspectRatio !== undefined && !IMAGE_RATIOS.includes(out.imageAspectRatio) &&
+      !(out.imageAspectRatios || []).includes(out.imageAspectRatio)) {
+    issues.push({ message: 'features.imageAspectRatio must be one of ' + IMAGE_RATIOS.join(', '), path: ['features', 'imageAspectRatio'] });
   }
   if (raw.responseSchema !== undefined) {
     if (!isObject(raw.responseSchema)) issues.push({ message: 'features.responseSchema must be an object', path: ['features', 'responseSchema'] });
@@ -166,6 +183,14 @@ export async function apply(ctx, config) {
   const registration = ctx.llm.registerAdapter(['antigravity'], adapter);
   log('model provider registered (' + client.host + ')');
 
+  // Built-in image generation as an agent tool: any model can draw, like the Antigravity IDE.
+  let unregisterTool;
+  if (config.features.imageGen !== false) {
+    const generator = createImageGenerator({ client, adapter, config, log });
+    unregisterTool = registerImageTool(ctx, { generator, config, log });
+    log('image_generate tool registered');
+  }
+
   // Warm the catalogue in the background so the first model-picker open is instant.
   adapter.loadCatalogue()
     .then((catalogue) => log('catalogue ready: ' + Object.keys(catalogue.models).length +
@@ -178,6 +203,7 @@ export async function apply(ctx, config) {
 
   return () => {
     try { registration?.(); } catch { /* already disposed */ }
+    try { unregisterTool?.(); } catch { /* already disposed */ }
     log('model provider unregistered');
   };
 }

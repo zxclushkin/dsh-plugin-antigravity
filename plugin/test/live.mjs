@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createAntigravityClient, createTokenSource } from '../src/antigravity.mjs';
 import { AntigravityAdapter } from '../src/adapter.mjs';
+import { createImageGenerator } from '../src/imagegen.mjs';
 
 const MEDIA_DIR = path.join(os.tmpdir(), 'dsh-antigravity-live-test');
 const baseConfig = {
@@ -153,20 +154,19 @@ async function main() {
       ' text=' + JSON.stringify(grounded.text.slice(0, 100)));
   });
 
-  // 7. image generation (a photo prompt succeeds; abstract prompts are refused by the model)
-  if (image) {
-    const drawn = await withFeatures({ imageAspectRatio: '16:9' }, async (scoped) => collect(scoped, {
-      provider: 'antigravity', model: image.id,
-      messages: user('A photo of a cat sitting on a windowsill.'),
-      maxTokens: 4096,
-    }));
-    const match = /!\[image\]\((.+?)\)/.exec(drawn.text);
-    const bytes = match && fs.existsSync(match[1]) ? fs.statSync(match[1]).size : 0;
-    record('image generation', Boolean(match && bytes > 1000),
-      match ? 'file=' + match[1] + ' (' + bytes + ' bytes)' +
-        ' finish=' + JSON.stringify(drawn.finish?.reason) : 'no image; finish=' + JSON.stringify(drawn.finish?.reason) + ' text=' + JSON.stringify(drawn.text.slice(0, 160)));
-  } else {
-    console.log('SKIP image generation (no image model in this account catalogue)');
+  // 7. built-in image generation (the same generator the image_generate tool uses)
+  if (process.env.AG_IMAGE_TEST === '1' && image) {
+    const generator = createImageGenerator({ client, adapter, config: baseConfig, log });
+    try {
+      const drawn = await generator.generate({ prompt: 'A photo of a cat sitting on a windowsill.', aspectRatio: '16:9' });
+      const bytes = drawn.images[0] ? fs.statSync(drawn.images[0].path).size : 0;
+      record('image generation (imageGen)', bytes > 1000,
+        drawn.images[0] ? 'file=' + drawn.images[0].path + ' (' + bytes + ' bytes)' : 'no image');
+    } catch (error) {
+      record('image generation (imageGen)', false, error.code + ': ' + String(error.message).slice(0, 120));
+    }
+  } else if (image) {
+    console.log('SKIP image generation (set AG_IMAGE_TEST=1 to spend image quota)');
   }
 
   // 8. unknown model failure

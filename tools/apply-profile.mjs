@@ -54,6 +54,7 @@ const INSERT_BLOCK = [
   '          googleSearch: false',
   '          # Generated images are written here and referenced from the answer as markdown.',
   '          imageOutput: true',
+  '          imageGen: true',
   '          mediaOutputDir: ' + JSON.stringify(MEDIA_DIR),
   MARK_END,
 ].join('\n');

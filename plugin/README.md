@@ -51,10 +51,20 @@ installed `language_server.exe`, mints access tokens and calls the private
 `v1internal:streamGenerateContent` API. Every request carries the `antigravity` user agent the
 endpoint demands.
 
+## Built-in image generation
+
+With `features.imageGen` (default `true`) the plugin also registers an `image_generate` agent
+tool (`src/tool.mjs` + `src/imagegen.mjs`). Any model can call it mid-conversation; the tool
+calls Antigravity's built-in image model (`imageGenerationModelIds` →
+`gemini-3.1-flash-image`) with `responseModalities: ["TEXT","IMAGE"]` + `imageConfig`, saves
+the JPEG into `features.mediaOutputDir` and returns a markdown image reference that the chat UI
+renders. Parameters: `prompt`, `aspect_ratio` (enum), `count` (1–4). A refused generation
+(HTTP 200 + empty content + `finishMessage`) is reported as an error, not a blank success.
+
 ## Tests
 
 ```powershell
-node test/unit.mjs     # offline, 18 checks
+node test/unit.mjs     # offline, 21 checks
 node test/live.mjs     # live, 10 checks, needs Antigravity installed and spends quota
 ```
 

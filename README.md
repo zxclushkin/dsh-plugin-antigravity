@@ -34,6 +34,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 | Live adapter checks against the real API | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
 | DSH end-to-end, text | `dsh headless` with only this plugin mounted → model answer `PONG` |
 | DSH end-to-end, tools | agent created a file through the harness tool loop (tool-call → tool-result → final answer) |
+| DSH end-to-end, built-in image generation | agent called `image_generate` and produced a 1024×1024 JPEG in one turn |
 | Live profile replay | the real `desktop` patch replays headlessly and answers |
 | Model picker | dynamic: the account's catalogue becomes the Antigravity group |
 
@@ -42,6 +43,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 | Capability | State |
 |---|---|
 | Text streaming, system prompts, stop sequences, temperature, max tokens | works |
+| **Built-in `image_generate` tool — any model can draw mid-conversation** | works (agent called it in a real turn; 1024×1024 JPEG produced and rendered) |
 | Tool calling (`functionDeclarations`) incl. parallel calls | works |
 | `thoughtSignature` replay for tool calls (Gemini rejects history without it) | works, encoded in the harness tool-call id |
 | Reasoning stream → harness `reasoning-delta` (the "Thinking" block) | works |
@@ -134,7 +136,11 @@ next to it.
 | `features.thinkingBudgets` | `{low:1024, medium:4096, high:16384}` | token budgets for Gemini 2.5 models |
 | `features.responseMimeType` / `features.responseSchema` | — | structured output (Gemini only) |
 | `features.imageOutput` | `true` | allow image models |
-| `features.imageAspectRatio` | `1:1` | requested aspect ratio for image models |
+| `features.imageGen` | `true` | register the built-in `image_generate` agent tool |
+| `features.imageModel` | account's `imageGenerationModelIds[0]` | override the image model used by the tool |
+| `features.imageAspectRatio` | `1:1` | default aspect ratio for image models and the tool |
+| `features.imageAspectRatios` | `['1:1','16:9','9:16','4:3','3:4']` | ratios the tool accepts |
+| `features.imageMaxOutputTokens` | `4096` | output cap for one image generation |
 | `features.imageMaxBytes` | 4 MiB | attachment projection budget for input images |
 | `features.mediaOutputDir` | `%TEMP%/dsh-antigravity-media` | where generated images are written |
 | `features.maxOutputTokensCap` | — | hard cap on `maxOutputTokens` |
@@ -161,12 +167,35 @@ account appears after the catalogue cache expires (or a restart).
 | `DUPLICATE_ADAPTER` | a stale `antigravity` provider route is still in the `llm-pi-ai` block — remove it |
 | Model missing after an account change | wait for `modelCacheTtlMs` or restart DSH |
 
+## Built-in image generation (imageGen)
+
+The plugin registers an `image_generate` tool, so **any** model in the agent — Gemini, Claude,
+GPT-OSS — can draw during a normal conversation, the way the Antigravity IDE's own agent does.
+The tool calls the same built-in image model the IDE uses (`imageGenerationModelIds`, i.e.
+`gemini-3.1-flash-image`) with `responseModalities: ["TEXT","IMAGE"]` + `imageConfig`, saves the
+JPEG under `features.mediaOutputDir` and returns a markdown image reference, which the chat UI
+renders (absolute paths are allowed by the harness file route).
+
+```
+user: "нарисуй красный круг на белом фоне"
+model → image_generate {prompt, aspect_ratio}
+      → gemini-3.1-flash-image (built-in imageGen)
+      → C:\lab\antigravity\media\ag-….jpeg  +  ![…](C:/lab/antigravity/media/ag-….jpeg)
+```
+
+Parameters: `prompt` (required), `aspect_ratio` (enum of the configured ratios), `count`
+(1–4; the endpoint rejects `candidateCount > 1`, so extra images are sequential calls).
+A refused generation comes back as HTTP 200 + empty content + `finishMessage`; the tool reports
+it as an error instead of a blank success. Image *editing* is available by attaching an image
+and choosing the image model directly in the picker (the tool is text-to-image).
+
 ## Development
 
 ```powershell
 cd plugin
-node test/unit.mjs     # offline: 18 checks, no network, no Antigravity
+node test/unit.mjs     # offline: 21 checks, no network, no Antigravity
 node test/live.mjs     # live: 10 checks against the real API (spends the account quota)
+AG_IMAGE_TEST=1 node test/live.mjs   # additionally exercises the imageGen generator
 ```
 
 `tools/apply-profile.mjs` rebuilds and validates the profile patch; `tools/catalogue.mjs`

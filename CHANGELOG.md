@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — built-in image generation tool
+
+The adapter now also registers a harness **tool**, so image generation is available to *any*
+model in the agent instead of only to the image model in the picker — the way the Antigravity
+IDE's own agent uses its built-in imageGen.
+
+- `image_generate` tool (`src/tool.mjs`): `prompt`, `aspect_ratio` (enum), `count` (1–4);
+  returns saved absolute paths and a markdown image reference rendered by the chat UI.
+- `src/imagegen.mjs`: calls the account's built-in image model
+  (`imageGenerationModelIds` → `gemini-3.1-flash-image`) with
+  `responseModalities: ["TEXT","IMAGE"]` + `imageConfig`, saves the JPEG, and turns the
+  endpoint's HTTP-200-with-`finishMessage` refusals into real failures.
+- Config: `features.imageGen`, `features.imageModel`, `features.imageAspectRatios`,
+  `features.imageMaxOutputTokens`; `plugin.inject` is now `['llm','tools']`.
+- Verified end-to-end through `dsh headless`: the agent called `image_generate` and produced a
+  1024×1024 JPEG in one turn; offline checks grew to 21.
+
 ## 0.2.0 — native LLM adapter
 
 Rewritten from a local OpenAI-compatible gateway + `llm-pi-ai` route into a **native harness
