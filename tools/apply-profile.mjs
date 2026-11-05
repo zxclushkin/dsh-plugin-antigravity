@@ -33,8 +33,8 @@ const SCRATCH_HOME = path.join(WORK, 'dshhome');
 const APPLY = process.argv.includes('--apply');
 const PRISTINE = process.argv.includes('--pristine');
 // --package mounts by package name instead of absolute path; it requires the plugin to be
-// installed into the profile first (`dsh plugin --profile <p> add link:<repo>/plugin`) and is
-// what makes DSH watch the linked sources for live reload.
+// installed into the profile first (`dsh plugin --profile <p> add link:<repo>/plugin`).
+// Note: DSH's HMR does not watch linked package targets, so source edits still need a restart.
 const PACKAGE_MODE = process.argv.includes('--package');
 const PACKAGE_NAME = 'dsh-plugin-antigravity';
 
@@ -48,7 +48,7 @@ const INSERT_BLOCK = [
   MARK_BEGIN,
   '# Native LLM adapter for the models of the installed Google Antigravity app.',
   PACKAGE_MODE
-    ? '# Mounted by package name from the profile link: DSH reloads the linked sources on change.'
+    ? '# Mounted by package name from the profile link (source edits still need a restart).'
     : '# Mounted by absolute path on purpose: no package install and no pnpm run in the profile.',
   '- insert:',
   '    - id: antigravity-llm',

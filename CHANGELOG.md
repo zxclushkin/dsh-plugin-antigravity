@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.6.0 — localized settings page, durable images, cross-platform credentials
+
+The GUI now speaks the operator's language, generated images land in the harness attachment
+store, credentials are read on macOS/Linux as well, and the default request spacing finally looks
+human.
+
+- **GUI localization** (`plugin/client.js`): every visible string of **Settings → Antigravity**
+  goes through the DSH client locale service, registered under the `antigravity` namespace.
+  Complete **en / zh / ru** dictionaries, 72 keys each, with `{placeholder}` interpolation; the
+  page follows the DSH language and re-translates live; a composition without the locale service
+  gets the English fallback. Technical values — model ids/names, tool names, paths,
+  `HTTP <status>`, `k ctx`/`k out` — stay untranslated on purpose. Slot id, order and label are
+  unchanged.
+- **Durable image attachments** (`src/imagegen.mjs`, `src/adapter.mjs`, `src/tool.mjs`): generated
+  images — both `image_generate` and image-model output in a chat turn — are committed to the
+  harness attachment store as normalized, content-addressed attachments and referenced by their
+  durable host path (`~/.dsh/attachments/…`); the tool output gains `attachment_id`. Falls back
+  to `features.mediaOutputDir` when the composition has no store or the store refuses the image;
+  `features.durableImages: false` is a single switch that forces that fallback for both the image
+  model's chat-turn output and `image_generate`. The GUI imageGen preview serves durable objects
+  too (`/antigravity/media/?path=`, content type sniffed from magic bytes, only the media dir and
+  the attachment store are allowed). The store contract was checked against the live service:
+  `saveImages` takes a **Uint8Array** of decoded bytes, not base64 text (fixed here).
+- **Cross-platform credentials** (`src/antigravity.mjs`): `readKeyringCredential` reads Windows
+  Credential Manager (verified live), macOS Keychain (`security find-generic-password -s
+  gemini:antigravity -w`) and Linux libsecret (`secret-tool lookup service gemini:antigravity`);
+  the language-server scan path is derived per platform. The macOS/Linux paths are best-effort and
+  untested here; failures name the command and the entry to fix. `parseCredentialBlob` and
+  `credentialCommandFor` are exported for tests and diagnostics.
+- **Human-shaped throttle default**: `minRequestIntervalMs` is now `500` (was `0`), alongside
+  `maxConcurrentRequests: 2` and `rateLimitCooldownMs: 60000`, so a local agent loop is spaced
+  like an IDE session. All three stay configurable.
+- **Packaging** (`tools/apply-profile.mjs`): new `--package` mode mounts the plugin by package
+  name and validates `name: dsh-plugin-antigravity` in the generated patch; the desktop profile
+  installs it as a link dependency (`dsh plugin --profile desktop add
+  'link:C:/lab/antigravity/plugin'`). The mount switch applies live. HMR does **not** reliably
+  watch linked plugin sources in this DSH build, so source edits still need a restart; patch and
+  config edits do not. Bumping a versioned `file:///…?rev=<timestamp>` mount re-imports the module
+  live (verified) and is the no-restart path for host-code changes; the client bundle needs a page
+  refresh either way.
+- Tests: offline checks grew to 42 (durable-store persistence and media-directory fallback,
+  credential helpers for every platform, throttle defaults, durable-preview route); live default
+  is 16 checks, matrix
+  25, and the full matrix+image run 26 with one image check skipped on the account's image quota
+  (a quota wall is a SKIP, not a FAIL).
+
 ## 0.5.0 — grounded search tool, request throttling, image editing
 
 Closes the "grounding never works in the agent loop" gap and hardens the account-facing

@@ -122,6 +122,7 @@ window.__ModuleLoader__.load({
         'features.googleSearchTool': 'google_search tool: the agent can search Google with sources',
         'features.googleSearch': 'Grounding on direct requests without tools (the endpoint allows it)',
         'features.imageGen': 'Built-in imageGen: the image_generate tool for any model',
+        'features.durableImages': 'Durable images: keep generated files in the harness attachment store',
         'features.imageOutput': 'Image model in the model list',
         'features.includeThoughts': 'includeThoughts (the endpoint ignores it)',
         'features.thinking': 'Thinking',
@@ -196,6 +197,7 @@ window.__ModuleLoader__.load({
         'features.googleSearchTool': 'google_search 工具：智能体可以带来源地搜索 Google',
         'features.googleSearch': '在无工具的直连请求上启用 grounding（端点允许这样做）',
         'features.imageGen': '内置 imageGen：任何模型都可使用 image_generate 工具',
+        'features.durableImages': '持久图片：将生成的文件保存在 harness 附件库中',
         'features.imageOutput': '在模型列表中显示图像模型',
         'features.includeThoughts': 'includeThoughts（端点会忽略它）',
         'features.thinking': '思考级别',
@@ -270,6 +272,7 @@ window.__ModuleLoader__.load({
         'features.googleSearchTool': 'Инструмент google_search: агент может искать в Google с источниками',
         'features.googleSearch': 'Grounding на прямых запросах без инструментов (эндпоинт так разрешает)',
         'features.imageGen': 'Встроенный imageGen: инструмент image_generate для любой модели',
+        'features.durableImages': 'Durable-картинки: хранить сгенерированные файлы в хранилище вложений харнесса',
         'features.imageOutput': 'Image-модель в списке моделей',
         'features.includeThoughts': 'includeThoughts (эндпоинт его игнорирует)',
         'features.thinking': 'Размышления',
@@ -414,6 +417,7 @@ function Toggle(props) {
         ['googleSearchTool', 'features.googleSearchTool'],
         ['googleSearch', 'features.googleSearch'],
         ['imageGen', 'features.imageGen'],
+        ['durableImages', 'features.durableImages'],
         ['imageOutput', 'features.imageOutput'],
         ['includeThoughts', 'features.includeThoughts'],
       ];
@@ -500,8 +504,12 @@ function Toggle(props) {
         error ? h('div', { style: S.error }, error) : null,
         result ? h('div', null,
           result.images.map((image) => h('div', { key: image.name },
-            h('img', { src: '/antigravity/media/' + encodeURIComponent(image.name), alt: image.name, style: S.preview }),
-            h('div', { style: S.mono }, image.path + ' · ' + image.bytes + ' B'))),
+            h('img', {
+              src: image.previewUrl || ('/antigravity/media/' + encodeURIComponent(image.name)),
+              alt: image.name, style: S.preview,
+            }),
+            h('div', { style: S.mono }, image.path + ' · ' + image.bytes + ' B' +
+              (image.durable ? ' · durable' : '')))),
           result.text ? h('div', { style: S.muted }, result.text) : null) : null,
         h('div', { style: { ...S.muted, marginTop: '8px' } },
           t('image.note')));

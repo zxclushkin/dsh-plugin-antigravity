@@ -573,7 +573,8 @@ await checkAsync('test-image route returns a saved image', async () => {
 await checkAsync('media route serves only image files from the output directory', async () => {
   const dir = 'C:/lab/antigravity/.tmp/gui-media';
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(dir + '/ag-test.png', Buffer.from('pngbytes'));
+  // The route sniffs magic bytes (durable objects have no extension), so write a real PNG header.
+  fs.writeFileSync(dir + '/ag-test.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]));
   const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
   const routes = createStatusRoutes({ service, generator: {}, config: guiConfig, log: () => {} });
   const route = routes.find((item) => item.path === '/antigravity/media/');
@@ -585,6 +586,27 @@ await checkAsync('media route serves only image files from the output directory'
   const blocked = mockResponse();
   await route.handler(mockGet('/antigravity/media/..%2Fescape.txt'), blocked);
   assert.equal(blocked.status, 404);
+});
+
+await checkAsync('media route previews durable attachment paths within the allowed roots', async () => {
+  const durableDir = 'C:/lab/antigravity/.tmp/gui-durable';
+  fs.mkdirSync(durableDir, { recursive: true });
+  const objectFile = durableDir + '/abc123hash';
+  fs.writeFileSync(objectFile, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]));
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const routes = createStatusRoutes({
+    service, generator: {}, config: guiConfig, log: () => {},
+    allowedMediaRoots: [durableDir],
+  });
+  const route = routes.find((item) => item.path === '/antigravity/media/');
+  const ok = mockResponse();
+  await route.handler(mockGet('/antigravity/media/?path=' + encodeURIComponent(objectFile)), ok);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers['Content-Type'], 'image/jpeg', 'extension-less durable object is sniffed');
+
+  const outside = mockResponse();
+  await route.handler(mockGet('/antigravity/media/?path=' + encodeURIComponent('C:/Windows/win.ini')), outside);
+  assert.equal(outside.status, 404, 'paths outside the allowed roots are refused');
 });
 
 await checkAsync('config route edits features through the harness config editor', async () => {

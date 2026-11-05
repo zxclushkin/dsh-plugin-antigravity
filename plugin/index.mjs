@@ -225,8 +225,9 @@ export async function apply(ctx, config) {
     config,
     log,
     throttle,
-    // Durable attachment store when the composition mounts it; media-dir fallback otherwise.
-    getAttachments: () => ctx.get('attachments'),
+    // Durable attachment store when the composition mounts it AND the feature is on; the
+    // media-dir fallback is used otherwise. Same gate as the adapter's chat-turn images.
+    getAttachments: () => (config.features.durableImages === false ? undefined : ctx.get('attachments')),
   });
   if (config.features.imageGen !== false) {
     toolDisposers.push(registerImageTool(ctx, { generator, config, log }));

@@ -3,10 +3,22 @@
 // image-generation action. Routes are plain node:http handlers registered on the harness
 // web server, so the browser reaches them same-origin without extra RPC plumbing.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { imageMarkdown } from './imagegen.mjs';
 
 const CACHE_MS = 60_000;
+/** Durable attachment objects live here; the GUI may preview them by absolute path. */
+const ATTACHMENTS_ROOT = path.join(os.homedir(), '.dsh', 'attachments');
+
+/** Content type from magic bytes (durable objects have no file extension). */
+function sniffImageType(bytes) {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes.length >= 12 && bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  if (bytes.length >= 3 && bytes.toString('latin1', 0, 3) === 'GIF') return 'image/gif';
+  return null;
+}
 
 function sendJson(res, status, payload) {
   const text = JSON.stringify(payload);
@@ -159,8 +171,45 @@ function validateFeaturePatch(raw) {
  * Routes for the settings GUI.
  * @returns {Array<{kind:'exact', path: string, method: string, handler: Function}>}
  */
-export function createStatusRoutes({ service, generator, config, log, getConfigEditor, search, entryId = 'antigravity-llm' }) {
+export function createStatusRoutes({ service, generator, config, log, getConfigEditor, search, allowedMediaRoots, entryId = 'antigravity-llm' }) {
   const mediaDir = (config.features && config.features.mediaOutputDir) || null;
+  // Absolute image paths the preview route may serve: the media directory and the durable
+  // attachment store. Everything else is refused (the route is same-origin but still guarded).
+  const previewRoots = (allowedMediaRoots || [mediaDir, ATTACHMENTS_ROOT])
+    .filter((root) => typeof root === 'string' && root.length > 0)
+    .map((root) => path.resolve(root));
+
+  function resolvePreviewFile(requested) {
+    if (typeof requested !== 'string' || requested.length === 0) return null;
+    let resolved;
+    try { resolved = path.resolve(requested); } catch { return null; }
+    if (!previewRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) return null;
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile() || stat.size > 40 * 1024 * 1024) return null;
+      return resolved;
+    } catch {
+      return null;
+    }
+  }
+
+  function serveImageFile(res, file) {
+    try {
+      const bytes = fs.readFileSync(file);
+      const type = sniffImageType(bytes);
+      if (!type) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length, 'Cache-Control': 'no-store' });
+      res.end(bytes);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
+  }
+
   return [
     {
       kind: 'exact',
@@ -242,7 +291,11 @@ export function createStatusRoutes({ service, generator, config, log, getConfigE
               name: path.basename(image.path),
               mimeType: image.mimeType,
               bytes: image.bytes,
+              durable: image.durable === true,
+              attachmentId: image.attachmentId,
               markdown: imageMarkdown(image.path),
+              // Preview works for both the media directory and durable attachment objects.
+              previewUrl: '/antigravity/media/?path=' + encodeURIComponent(image.path),
             })),
             text: result.text || '',
             model: result.model,
@@ -299,25 +352,23 @@ export function createStatusRoutes({ service, generator, config, log, getConfigE
       method: 'GET',
       async handler(req, res) {
         const url = new URL(req.url || '/', 'http://x');
+        const requestedPath = url.searchParams.get('path');
+        if (requestedPath) {
+          const file = resolvePreviewFile(requestedPath);
+          if (!file) {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          return serveImageFile(res, file);
+        }
         const name = safeMediaName(path.basename(url.pathname));
         if (!name || !mediaDir) {
           res.writeHead(404);
           res.end();
           return;
         }
-        const file = path.join(mediaDir, name);
-        try {
-          const bytes = fs.readFileSync(file);
-          const extension = name.split('.').pop().toLowerCase();
-          const type = extension === 'png' ? 'image/png'
-            : extension === 'webp' ? 'image/webp'
-              : extension === 'gif' ? 'image/gif' : 'image/jpeg';
-          res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length, 'Cache-Control': 'no-store' });
-          res.end(bytes);
-        } catch {
-          res.writeHead(404);
-          res.end();
-        }
+        serveImageFile(res, path.join(mediaDir, name));
       },
     },
   ];
