@@ -158,7 +158,7 @@ function validateFeaturePatch(raw) {
  * Routes for the settings GUI.
  * @returns {Array<{kind:'exact', path: string, method: string, handler: Function}>}
  */
-export function createStatusRoutes({ service, generator, config, log, getConfigEditor, entryId = 'antigravity-llm' }) {
+export function createStatusRoutes({ service, generator, config, log, getConfigEditor, search, entryId = 'antigravity-llm' }) {
   const mediaDir = (config.features && config.features.mediaOutputDir) || null;
   return [
     {
@@ -245,6 +245,42 @@ export function createStatusRoutes({ service, generator, config, log, getConfigE
             })),
             text: result.text || '',
             model: result.model,
+          });
+        } catch (error) {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({
+            ok: false,
+            error: error && error.message ? error.message : String(error),
+            code: error && error.code ? error.code : 'ERROR',
+          }));
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/antigravity/test-search',
+      method: 'POST',
+      async handler(req, res) {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: 'invalid request body: ' + error.message });
+        }
+        const query = typeof body.query === 'string' && body.query.trim()
+          ? body.query.trim()
+          : 'Who won the most recent Formula 1 World Drivers Championship?';
+        if (typeof search !== 'function') {
+          return sendJson(res, 501, { ok: false, error: 'grounded search is not available in this composition' });
+        }
+        try {
+          const result = await search(query);
+          sendJson(res, 200, {
+            ok: true,
+            query,
+            answer: result.text,
+            sources: result.sources,
+            queries: result.queries,
           });
         } catch (error) {
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });

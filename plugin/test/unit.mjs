@@ -855,4 +855,33 @@ await checkAsync('status snapshot exposes version, tools, limits and last error'
   assert.equal(snapshot.limits.rateLimitCooldownMs, 60_000);
 });
 
+await checkAsync('test-search route returns answer and sources', async () => {
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const routes = createStatusRoutes({
+    service,
+    generator: {},
+    config: guiConfig,
+    log: () => {},
+    search: async (query) => ({
+      text: 'answer for ' + query,
+      sources: [{ title: 'Example', uri: 'https://example.com' }],
+      queries: ['f1 2025'],
+    }),
+  });
+  const route = routes.find((item) => item.path === '/antigravity/test-search');
+  const ok = mockResponse();
+  await route.handler(mockPost('/antigravity/test-search', { query: 'f1' }), ok);
+  assert.equal(ok.status, 200);
+  const payload = JSON.parse(ok.body);
+  assert.equal(payload.answer, 'answer for f1');
+  assert.equal(payload.sources.length, 1);
+  assert.deepEqual(payload.queries, ['f1 2025']);
+
+  const bare = createStatusRoutes({ service, generator: {}, config: guiConfig, log: () => {} })
+    .find((item) => item.path === '/antigravity/test-search');
+  const unavailable = mockResponse();
+  await bare.handler(mockPost('/antigravity/test-search', { query: 'x' }), unavailable);
+  assert.equal(unavailable.status, 501);
+});
+
 console.log('\n' + passed + ' checks passed');

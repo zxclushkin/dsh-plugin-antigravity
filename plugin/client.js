@@ -257,6 +257,50 @@ function Toggle(props) {
           'Генерирует встроенная image-модель Antigravity; расходует квоту аккаунта.'));
     }
 
+    function TestSearchSection() {
+      const [query, setQuery] = React.useState('Кто выиграл последний чемпионат мира Формулы-1?');
+      const [busy, setBusy] = React.useState(false);
+      const [result, setResult] = React.useState(null);
+      const [error, setError] = React.useState(null);
+      const run = React.useCallback(async () => {
+        setBusy(true); setError(null); setResult(null);
+        try {
+          const response = await fetch('/antigravity/test-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query }),
+          });
+          const json = await response.json();
+          if (!json.ok) throw new Error((json.code ? json.code + ': ' : '') + (json.error || 'search failed'));
+          setResult(json);
+        } catch (failure) {
+          setError(String(failure && failure.message ? failure.message : failure));
+        } finally {
+          setBusy(false);
+        }
+      }, [query]);
+      return h(Card, { title: 'Проверка google_search' },
+        h('div', { style: { ...S.row, marginBottom: '8px' } },
+          h('input', {
+            style: S.input, value: query, placeholder: 'что найти',
+            onChange: (event) => setQuery(event.target.value),
+          }),
+          h('button', { style: S.buttonPrimary, disabled: busy, onClick: run, type: 'button' },
+            busy ? 'Поиск…' : 'Найти')),
+        error ? h('div', { style: S.error }, error) : null,
+        result ? h('div', null,
+          h('div', { style: S.value }, result.answer),
+          (result.queries || []).length
+            ? h('div', { style: { ...S.mono, marginTop: '6px' } }, 'queries: ' + result.queries.join(' | '))
+            : null,
+          (result.sources || []).map((source, index) => h('div', { key: source.uri + index, style: S.muted },
+            '[' + (index + 1) + '] ',
+            h('a', { href: source.uri, target: '_blank', rel: 'noreferrer', style: { color: COLOR.brand } }, source.title))))
+          : null,
+        h('div', { style: { ...S.muted, marginTop: '8px' } },
+          'Один grounded-запрос через googleSearch; расходует квоту модели поиска.'));
+    }
+
     function AccountSection(props) {
       const account = props.account || {};
       const rows = [
@@ -324,6 +368,7 @@ function Toggle(props) {
         status.phase !== 'loading' ? h(ModelsSection, { models: data.models, error: data.modelsError }) : null,
         status.phase !== 'loading' ? h(FeaturesSection, { features: data.features, onSaved: () => status.reload(false) }) : null,
         status.phase !== 'loading' ? h(RuntimeSection, { plugin, limits: data.limits }) : null,
+        h(TestSearchSection),
         h(TestImageSection));
     }
 

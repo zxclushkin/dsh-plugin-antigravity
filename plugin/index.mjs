@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createAntigravityClient, createTokenSource } from './src/antigravity.mjs';
 import { AntigravityAdapter } from './src/adapter.mjs';
 import { createImageGenerator, DEFAULT_ASPECT_RATIOS } from './src/imagegen.mjs';
-import { createSearchTool } from './src/search.mjs';
+import { createSearchTool, DEFAULT_SEARCH_MODEL, groundedSearch } from './src/search.mjs';
 import { createStatusService, registerStatusRoutes } from './src/status.mjs';
 import { createThrottle } from './src/throttle.mjs';
 import { registerImageTool } from './src/tool.mjs';
@@ -251,6 +251,14 @@ export async function apply(ctx, config) {
       log,
       // Config edits go through the harness config editor, so the patch stays the source of truth.
       getConfigEditor: () => ctx.get('configEditor'),
+      // One grounded search for the GUI smoke test.
+      search: (query) => groundedSearch({
+        client,
+        model: config.features.searchModel || DEFAULT_SEARCH_MODEL,
+        query,
+        log,
+        throttle,
+      }),
     }), 'antigravity: settings routes');
     log('settings API registered on /antigravity/*');
   });
