@@ -55,6 +55,14 @@ window.__ModuleLoader__.load({
         border: '1px solid ' + COLOR.border, borderRadius: '8px', background: COLOR.bg || 'transparent',
         color: COLOR.text, fontSize: '12px', padding: '6px 10px', minWidth: '0', flex: 1,
       },
+      // Native <select> popups are painted by the browser, not the page: without an explicit
+      // color/background the options inherit the light-on-dark page color onto a white popup and
+      // become unreadable. Theme both the control and its options from the same tokens.
+      select: {
+        border: '1px solid ' + COLOR.border, borderRadius: '8px', background: COLOR.surfaceNested,
+        color: COLOR.text, fontSize: '12px', padding: '6px 10px', minWidth: '0',
+      },
+      option: { background: COLOR.surfaceNested, color: COLOR.text },
       preview: { marginTop: '10px', borderRadius: '8px', border: '1px solid ' + COLOR.border, maxWidth: '320px', display: 'block' },
     };
 
@@ -455,16 +463,18 @@ function Toggle(props) {
         h('div', { style: { ...S.row, marginTop: '10px', gap: '16px', flexWrap: 'wrap' } },
           h('label', { style: { ...S.label, display: 'flex', alignItems: 'center', gap: '6px' } }, t('features.thinking'),
             h('select', {
-              style: { ...S.input, flex: '0 0 auto' },
+              style: { ...S.select, flex: '0 0 auto' },
               value: draft.defaultThinkingLevel || '',
               onChange: (event) => setDraft(Object.assign({}, draft, { defaultThinkingLevel: event.target.value || undefined })),
-            }, THINKING_LEVELS.map((level) => h('option', { key: level || 'default', value: level }, level ? t('thinking.' + level) : t('common.default'))))),
+            }, THINKING_LEVELS.map((level) => h('option', {
+              key: level || 'default', value: level, style: S.option,
+            }, level ? t('thinking.' + level) : t('common.default'))))),
           h('label', { style: { ...S.label, display: 'flex', alignItems: 'center', gap: '6px' } }, t('features.aspect'),
             h('select', {
-              style: { ...S.input, flex: '0 0 auto' },
+              style: { ...S.select, flex: '0 0 auto' },
               value: draft.imageAspectRatio || '1:1',
               onChange: (event) => setDraft(Object.assign({}, draft, { imageAspectRatio: event.target.value })),
-            }, ASPECT_RATIOS.map((ratio) => h('option', { key: ratio, value: ratio }, ratio)))),
+            }, ASPECT_RATIOS.map((ratio) => h('option', { key: ratio, value: ratio, style: S.option }, ratio)))),
           h('button', { type: 'button', style: S.buttonPrimary, disabled: busy, onClick: save }, busy ? t('common.saving') : t('common.save'))),
         message ? h('div', { style: { ...S.muted, marginTop: '8px', color: COLOR.ok } }, t('features.saved', { features: message })) : null,
         error ? h('div', { style: { ...S.error, marginTop: '8px' } }, error) : null,

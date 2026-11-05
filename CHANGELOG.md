@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2 — readable selects on the settings page
+
+- Fixed the Thinking and Aspect dropdowns: the browser paints the native `<select>` popup itself,
+  so the options inherited the light page text onto a white popup and `low`/`medium`/`high` were
+  almost invisible. Both the control and every `<option>` are now themed from the same
+  `--dsw-alias-*` tokens as the rest of the page, so the open list is readable in dark and light
+  themes alike.
+
 ## 0.6.1 — hotfix: the localized settings page no longer aborts web boot
 
 - **Crash fix.** The 0.6.0 client half read the locale service as `ctx.locale` while only
