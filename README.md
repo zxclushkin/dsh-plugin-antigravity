@@ -36,27 +36,20 @@ Unofficial client. Not affiliated with, endorsed by, or supported by Google or D
 
 The same models are available in VS Code chat through the
 [`LanguageModelChatProvider`](https://code.visualstudio.com/api/extension-guides/ai/language-model-chat-provider)
-API — see [`vscode/`](vscode/README.md). Each
-[release](https://github.com/zxclushkin/dsh-plugin-antigravity/releases) ships the built VSIX, so
-installing needs neither a clone nor a build:
+API. That front-end lives in its own repository:
+[**zxclushkin/antigravity-chat**](https://github.com/zxclushkin/antigravity-chat), with its own
+releases, CI and a self-contained VSIX.
 
 ```powershell
-# replace the tag with the newest vscode-v* release
-gh release download vscode-v0.1.0 --repo zxclushkin/dsh-plugin-antigravity `
+gh release download v0.1.0 --repo zxclushkin/antigravity-chat `
   --pattern antigravity-chat.vsix --dir "$env:TEMP\antigravity-chat"
 code --install-extension "$env:TEMP\antigravity-chat\antigravity-chat.vsix" --force
 ```
 
-Building from source is `cd vscode; npm install; npm run package`. The extension reuses this
-repo's transport core (`plugin/src`: credentials, catalogue, request shaping, tool-call
-encoding, errors), so the two front-ends cannot drift apart, and `esbuild` bundles that core
-into the VSIX.
-
-Then open the model picker → **Manage Models…** → **Antigravity** → enable models. Verified
-inside a real VS Code 1.144.1 extension host: the provider registers, activates through
-`onLanguageModelChatProvider:antigravity`, and lists the account's 18 models (17 chat + 1
-image). Streaming, agent tool calls, image input and image-model output all run over the same
-endpoint as the DSH plugin.
+It reuses this repository's transport core (`plugin/src`: credentials, catalogue, request
+shaping, tool-call encoding, errors), vendored there with `upstream.json` provenance and a
+hash check in its CI. Verified in a real VS Code 1.144.1 extension host: 18 models (17 chat +
+1 image), streaming, agent tool calls, image input and image-model output.
 
 ## Status
 
