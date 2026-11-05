@@ -121,6 +121,22 @@ check('OpenAI tools become functionDeclarations', () => {
   assert.equal(convertTools([]), null);
 });
 
+check('no-argument tools are declared without parameters', () => {
+  // Anthropic rejects an empty input_schema forwarded by Antigravity ("Input should be
+  // 'object'"), and Gemini invents arguments when given an OBJECT shell — so omit it.
+  const tools = convertTools([
+    { type: 'function', function: { name: 'ping' } },
+    { type: 'function', function: { name: 'ping2', parameters: { type: 'object', properties: {} } } },
+    { type: 'function', function: { name: 'get', parameters: { type: 'object', properties: { id: { type: 'string' } } } } },
+  ]);
+  const declarations = tools[0].functionDeclarations;
+  assert.equal(declarations[0].parameters, undefined);
+  assert.equal(declarations[1].parameters, undefined);
+  assert.equal(declarations[2].parameters.type, 'OBJECT');
+  assert.deepEqual(declarations[2].parameters.required, undefined);
+  assert.deepEqual(declarations[2].parameters.properties.id, { type: 'STRING' });
+});
+
 check('tool_choice maps to toolConfig', () => {
   assert.deepEqual(convertToolChoice('auto'), { functionCallingConfig: { mode: 'AUTO' } });
   assert.deepEqual(convertToolChoice('none'), { functionCallingConfig: { mode: 'NONE' } });

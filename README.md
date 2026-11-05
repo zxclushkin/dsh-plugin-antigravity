@@ -207,9 +207,14 @@ unreliable (it reports `gemini-2.5-flash` as "Gemini 3.5 Flash Lite").
 
 ```powershell
 cd plugin
-node test/unit.mjs     # offline: 17 checks, no network, no Antigravity
+node test/unit.mjs     # offline: 18 checks, no network, no Antigravity
 node test/gateway.mjs  # live: 8 checks against the real API (spends account quota)
 ```
+
+With the absolute-path mount (option A) the plugin module sits outside the profile, which is
+outside DSH's HMR watch scope: **editing plugin sources needs a restart** (disabling and
+re-enabling the row does not bust Node's ESM cache). Install with the `link:` route (option B)
+when iterating — DSH then reloads linked targets live.
 
 `docs/` holds the reverse-engineering notes this implementation is based on (in Russian):
 [`docs/api.md`](docs/api.md) for the Antigravity side (endpoint, auth, SSE, tools, quotas) and

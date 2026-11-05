@@ -22,6 +22,8 @@ const SCHEMA_KEYS = new Set(['type', 'description', 'enum', 'items', 'properties
 /**
  * OpenAI/JSON-Schema tool parameters -> Gemini `parameters`.
  * Gemini rejects unknown keywords, so the conversion is an allowlist, not a copy.
+ * Nested objects without properties degrade to STRING; a top-level no-argument schema is
+ * dropped by convertTools instead (see there).
  */
 export function convertSchema(schema, depth = 0) {
   if (!schema || typeof schema !== 'object' || depth > 12) return { type: 'STRING' };
@@ -73,6 +75,16 @@ export function convertSchema(schema, depth = 0) {
   return out;
 }
 
+/** True for `{}` / `{type:'object'}` / `{type:'object', properties:{}}` — a no-argument tool. */
+function isEmptyObjectSchema(schema) {
+  if (schema === undefined || schema === null) return true;
+  if (typeof schema !== 'object' || Array.isArray(schema)) return false;
+  const type = typeof schema.type === 'string' ? schema.type.toLowerCase() : (schema.properties ? 'object' : undefined);
+  if (type !== 'object') return false;
+  const properties = schema.properties;
+  return !properties || typeof properties !== 'object' || Object.keys(properties).length === 0;
+}
+
 /** OpenAI `tools` -> Gemini `tools`. Entries that are not functions are ignored. */
 export function convertTools(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return null;
@@ -82,8 +94,13 @@ export function convertTools(tools) {
     if (!fn || typeof fn.name !== 'string' || !fn.name) continue;
     const declaration = { name: fn.name };
     if (typeof fn.description === 'string' && fn.description) declaration.description = fn.description;
-    const parameters = fn.parameters && typeof fn.parameters === 'object' ? convertSchema(fn.parameters) : null;
-    if (parameters) declaration.parameters = parameters;
+    // A no-argument tool must be declared WITHOUT `parameters`: Gemini also accepts an
+    // OBJECT schema, but Anthropic rejects it (`input_schema.type: Input should be 'object'`)
+    // when Antigravity forwards an empty-properties object, so omitting is the only shape
+    // both families accept — and the one that keeps the model from inventing arguments.
+    if (!isEmptyObjectSchema(fn.parameters)) {
+      declaration.parameters = convertSchema(fn.parameters);
+    }
     declarations.push(declaration);
   }
   if (declarations.length === 0) return null;
