@@ -207,6 +207,7 @@ The page is served by the plugin itself over the harness web server, same-origin
 | Route | Purpose |
 |---|---|
 | `GET /antigravity/status[?refresh=1]` | account, quotas, catalogue and effective config (60 s cache) |
+| `POST /antigravity/config` | edits the editable `features.*` flags through the harness config editor (applies live) |
 | `POST /antigravity/test-image` | `{prompt, aspect_ratio}` → generated image path + markdown |
 | `GET /antigravity/media/<name>` | serves a generated image back for the preview |
 

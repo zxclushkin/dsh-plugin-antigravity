@@ -70,6 +70,7 @@ renders. Parameters: `prompt`, `aspect_ratio` (enum), `count` (1–4). A refused
 | Route (host, `src/status.mjs`) | Purpose |
 |---|---|
 | `GET /antigravity/status[?refresh=1]` | account, quota buckets, catalogue, effective config (60 s cache) |
+| `POST /antigravity/config` | edits the editable `features.*` flags through the harness config editor |
 | `POST /antigravity/test-image` | `{prompt, aspect_ratio}` → generated image path + markdown |
 | `GET /antigravity/media/<name>` | serves a generated image for the preview |
 
