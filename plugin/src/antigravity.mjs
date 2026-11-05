@@ -335,6 +335,33 @@ export function createAntigravityClient(config = {}) {
       return Object.fromEntries(buckets.map((b) => [b.modelId, b.remainingFraction]));
     },
 
+    /** Raw per-model quota buckets: [{modelId, remainingFraction, resetTime?}]. */
+    async fetchQuotaBuckets() {
+      const json = await rpc('retrieveUserQuota', {});
+      const buckets = Array.isArray(json.buckets) ? json.buckets : [];
+      return buckets.map((bucket) => ({
+        modelId: String(bucket.modelId || ''),
+        remainingFraction: Number.isFinite(Number(bucket.remainingFraction)) ? Number(bucket.remainingFraction) : undefined,
+        resetTime: bucket.resetTime ? String(bucket.resetTime) : undefined,
+        tokenType: bucket.tokenType ? String(bucket.tokenType) : undefined,
+      })).filter((bucket) => bucket.modelId);
+    },
+
+    /** Account tier and project from `loadCodeAssist` (best effort). */
+    async fetchAccount() {
+      try {
+        const json = await rpc('loadCodeAssist', { metadata: { pluginType: 'GEMINI' } });
+        return {
+          project: json.cloudaicompanionProject || json.project || undefined,
+          tier: json.currentTier ? json.currentTier.id : undefined,
+          tierName: json.currentTier ? json.currentTier.name : undefined,
+          paidTier: json.paidTier ? (json.paidTier.id || json.paidTier.name) : undefined,
+        };
+      } catch (error) {
+        return { error: error && error.message ? error.message : String(error) };
+      }
+    },
+
     /**
      * Start a streaming generation and return the raw fetch Response.
      * The caller parses SSE and owns cancellation.

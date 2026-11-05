@@ -30,7 +30,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 
 | Check | Result |
 |---|---|
-| Offline unit checks (translation, chunk protocol, metadata, errors) | **18/18** |
+| Offline unit checks (translation, chunk protocol, metadata, errors, GUI routes) | **26/26** |
 | Live adapter checks against the real API | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
 | DSH end-to-end, text | `dsh headless` with only this plugin mounted → model answer `PONG` |
 | DSH end-to-end, tools | agent created a file through the harness tool loop (tool-call → tool-result → final answer) |
@@ -189,11 +189,37 @@ A refused generation comes back as HTTP 200 + empty content + `finishMessage`; t
 it as an error instead of a blank success. Image *editing* is available by attaching an image
 and choosing the image model directly in the picker (the tool is text-to-image).
 
+## Settings GUI
+
+The plugin ships a Client half: **Settings → Antigravity** in the DSH Web UI. It shows
+
+- account tier, tier name and cloud project (`loadCodeAssist`);
+- **per-model limits** from `retrieveUserQuota`: remaining fraction with a bar (green/amber/red)
+  and the quota reset time;
+- the live model catalogue: context window, output cap, input modalities, `thinking` /
+  `recommended` badges, and the imageGen model;
+- the effective plugin configuration (the `features.*` flags) with a note on where to edit them;
+- **refresh** (forces a fresh quota read) and a **one-click imageGen smoke test** with an inline
+  preview of the generated image.
+
+The page is served by the plugin itself over the harness web server, same-origin:
+
+| Route | Purpose |
+|---|---|
+| `GET /antigravity/status[?refresh=1]` | account, quotas, catalogue and effective config (60 s cache) |
+| `POST /antigravity/test-image` | `{prompt, aspect_ratio}` → generated image path + markdown |
+| `GET /antigravity/media/<name>` | serves a generated image back for the preview |
+
+The Client module is a standard `dsh.client` bundle (`plugin/client.js`): it registers a
+`settings.section` entry through `ctx.slots` and reads the host API with `fetch`. Only the
+plugin's own `/antigravity/*` routes are reachable from the page; the API binds to the
+harness web server on `127.0.0.1` and is not exposed elsewhere.
+
 ## Development
 
 ```powershell
 cd plugin
-node test/unit.mjs     # offline: 21 checks, no network, no Antigravity
+node test/unit.mjs     # offline: 26 checks, no network, no Antigravity
 node test/live.mjs     # live: 10 checks against the real API (spends the account quota)
 AG_IMAGE_TEST=1 node test/live.mjs   # additionally exercises the imageGen generator
 ```

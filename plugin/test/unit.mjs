@@ -12,6 +12,7 @@ import {
 } from '../src/gemini.mjs';
 import { AntigravityError, httpError, transportError } from '../src/errors.mjs';
 import { createImageGenerator, imageMarkdown } from '../src/imagegen.mjs';
+import { createStatusRoutes, createStatusService } from '../src/status.mjs';
 import { imageToolDefinition, IMAGE_TOOL_NAME } from '../src/tool.mjs';
 
 let passed = 0;
@@ -447,6 +448,170 @@ await checkAsync('image refusal is reported as a failure', async () => {
   });
   await assert.rejects(() => badRatio.generate({ prompt: 'x', aspectRatio: '7:3' }), /unsupported aspect ratio/);
   await assert.rejects(() => badRatio.generate({ prompt: '  ' }), /must not be empty/);
+});
+
+/* --------------------------------------------------------- settings GUI API */
+
+function statusStub() {
+  return {
+    host: 'https://example.invalid',
+    fetchAccount: async () => ({ project: 'demo-project', tier: 'free-tier', tierName: 'Antigravity', paidTier: undefined }),
+    fetchQuotaBuckets: async () => [
+      { modelId: 'gemini-3-flash', remainingFraction: 0.97, resetTime: '2026-11-05T13:00:00Z' },
+      { modelId: 'gemini-3.1-flash-image', remainingFraction: 0.2, resetTime: '2026-11-05T13:00:00Z' },
+    ],
+    loadCatalogue: async () => ({
+      models: { 'gemini-3-flash': { id: 'gemini-3-flash', name: 'Gemini 3 Flash', contextWindow: 1048576, maxTokens: 65536, supportsImages: true, supportsThinking: true } },
+      imageModels: { 'gemini-3.1-flash-image': { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image' } },
+    }),
+    fetchModels: async () => ({ models: {}, imageModels: {}, defaultModelId: null }),
+    async openStream() { return { ok: true, status: 200, body: {} }; },
+    async *streamEvents() {},
+  };
+}
+
+const guiConfig = {
+  credentialTarget: 'gemini:antigravity',
+  userAgent: 'antigravity/2.29.0',
+  features: { googleSearch: false, imageGen: true, mediaOutputDir: 'C:/lab/antigravity/.tmp/gui-media' },
+};
+
+function mockResponse() {
+  return {
+    status: 0,
+    headers: {},
+    body: '',
+    writeHead(status, headers) { this.status = status; this.headers = headers || {}; return this; },
+    end(body) { if (body !== undefined) this.body += Buffer.isBuffer(body) ? body.toString('utf8') : String(body); },
+  };
+}
+
+function mockGet(url) {
+  return { method: 'GET', url };
+}
+
+function mockPost(url, body) {
+  const buffer = Buffer.from(JSON.stringify(body));
+  return {
+    method: 'POST',
+    url,
+    async *[Symbol.asyncIterator]() { yield buffer; },
+  };
+}
+
+await checkAsync('status service reports account, quota and catalogue', async () => {
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.account.project, 'demo-project');
+  assert.equal(snapshot.quotas.length, 2);
+  assert.equal(snapshot.quotas[0].remainingFraction, 0.97);
+  assert.equal(snapshot.models.length, 2);
+  assert.equal(snapshot.models.filter((model) => model.kind === 'image').length, 1);
+  assert.equal(snapshot.features.imageGen, true);
+  assert.equal(snapshot.cached, false);
+  const cached = await service.snapshot();
+  assert.equal(cached.cached, true);
+  const refreshed = await service.snapshot({ refresh: true });
+  assert.equal(refreshed.cached, false);
+});
+
+await checkAsync('status route answers JSON', async () => {
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const generator = { generate: async () => ({ images: [{ path: 'C:/tmp/x.jpeg', mimeType: 'image/jpeg', bytes: 10 }], text: '', model: 'img' }) };
+  const routes = createStatusRoutes({ service, generator, config: guiConfig, log: () => {} });
+  const statusRoute = routes.find((route) => route.path === '/antigravity/status');
+  assert.equal(statusRoute.kind, 'exact');
+  const res = mockResponse();
+  await statusRoute.handler(mockGet('/antigravity/status'), res);
+  assert.equal(res.status, 200);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.account.tier, 'free-tier');
+});
+
+await checkAsync('test-image route returns a saved image', async () => {
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  let seen = null;
+  const generator = {
+    generate: async (request) => {
+      seen = request;
+      return { images: [{ path: 'C:/lab/antigravity/.tmp/gui-media/ag-1.jpeg', mimeType: 'image/jpeg', bytes: 123 }], text: '', model: 'gemini-3.1-flash-image' };
+    },
+  };
+  const routes = createStatusRoutes({ service, generator, config: guiConfig, log: () => {} });
+  const route = routes.find((item) => item.path === '/antigravity/test-image');
+  const res = mockResponse();
+  await route.handler(mockPost('/antigravity/test-image', { prompt: 'a red circle' }), res);
+  assert.equal(res.status, 200);
+  const payload = JSON.parse(res.body);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.images[0].name, 'ag-1.jpeg');
+  assert.match(payload.images[0].markdown, /!\[ag-1\.jpeg\]/);
+  assert.equal(seen.prompt, 'a red circle');
+
+  const failure = mockResponse();
+  const failing = createStatusRoutes({
+    service, config: guiConfig, log: () => {},
+    generator: { generate: async () => { throw new Error('QUOTA exhausted'); } },
+  }).find((item) => item.path === '/antigravity/test-image');
+  await failing.handler(mockPost('/antigravity/test-image', {}), failure);
+  assert.equal(JSON.parse(failure.body).ok, false);
+  assert.match(JSON.parse(failure.body).error, /QUOTA/);
+});
+
+await checkAsync('media route serves only image files from the output directory', async () => {
+  const dir = 'C:/lab/antigravity/.tmp/gui-media';
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(dir + '/ag-test.png', Buffer.from('pngbytes'));
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const routes = createStatusRoutes({ service, generator: {}, config: guiConfig, log: () => {} });
+  const route = routes.find((item) => item.path === '/antigravity/media/');
+  assert.equal(route.kind, 'prefix');
+  const ok = mockResponse();
+  await route.handler(mockGet('/antigravity/media/ag-test.png'), ok);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers['Content-Type'], 'image/png');
+  const blocked = mockResponse();
+  await route.handler(mockGet('/antigravity/media/..%2Fescape.txt'), blocked);
+  assert.equal(blocked.status, 404);
+});
+
+await checkAsync('client bundle registers the settings section', async () => {
+  const source = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
+  let definition = null;
+  const window = { __ModuleLoader__: { load(value) { definition = value; } } };
+  // The bundle is a browser script, not an ES module: evaluate it against a stub window.
+  new Function('window', source)(window);
+  assert.equal(definition.id, 'dsh-plugin-antigravity');
+  assert.equal(typeof definition.factory, 'function');
+
+  const React = {
+    createElement: (...args) => ({ args }),
+    useState: (value) => [value, () => {}],
+    useEffect: () => {},
+    useCallback: (fn) => fn,
+  };
+  const moduleExports = definition.factory((name) => {
+    assert.equal(name, 'react');
+    return React;
+  });
+  assert.deepEqual(moduleExports.inject, ['slots']);
+  assert.equal(typeof moduleExports.apply, 'function');
+
+  let injectedSlot = null;
+  let registration = null;
+  moduleExports.apply({
+    slots: {
+      inject(slot, callback) { injectedSlot = slot; callback(); },
+      register(options, component) { registration = { options, component }; return () => {}; },
+    },
+  });
+  assert.equal(injectedSlot, 'settings.section');
+  assert.equal(registration.options.id, 'antigravity');
+  assert.equal(registration.options.order, 30);
+  assert.equal(registration.options.label, 'Antigravity');
+  assert.equal(typeof registration.component, 'function');
 });
 
 console.log('\n' + passed + ' checks passed');

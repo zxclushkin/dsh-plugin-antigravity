@@ -61,10 +61,26 @@ the JPEG into `features.mediaOutputDir` and returns a markdown image reference t
 renders. Parameters: `prompt`, `aspect_ratio` (enum), `count` (1–4). A refused generation
 (HTTP 200 + empty content + `finishMessage`) is reported as an error, not a blank success.
 
+## Settings GUI (Client half)
+
+`client.js` is a standard `dsh.client` bundle (declared in `package.json` with `platform: web`,
+`immediately: true`, and the `./client` export). It registers one `settings.section` entry via
+`ctx.slots` and reads the host API with `fetch`:
+
+| Route (host, `src/status.mjs`) | Purpose |
+|---|---|
+| `GET /antigravity/status[?refresh=1]` | account, quota buckets, catalogue, effective config (60 s cache) |
+| `POST /antigravity/test-image` | `{prompt, aspect_ratio}` → generated image path + markdown |
+| `GET /antigravity/media/<name>` | serves a generated image for the preview |
+
+The page shows the account tier/project, per-model limits with bars and reset times, the live
+catalogue (context/output/thinking/image) and the effective `features.*` flags, plus refresh and
+a one-click imageGen smoke test.
+
 ## Tests
 
 ```powershell
-node test/unit.mjs     # offline, 21 checks
+node test/unit.mjs     # offline, 26 checks (includes the GUI routes)
 node test/live.mjs     # live, 10 checks, needs Antigravity installed and spends quota
 ```
 

@@ -22,9 +22,13 @@ jobs:
       # The live test (plugin/test/live.mjs) needs a real Antigravity installation and quota.
       - run: node plugin/test/unit.mjs
       - run: node --check plugin/index.mjs
+      - run: node --check plugin/client.js
       - run: node --check plugin/src/adapter.mjs
       - run: node --check plugin/src/antigravity.mjs
       - run: node --check plugin/src/errors.mjs
       - run: node --check plugin/src/gemini.mjs
+      - run: node --check plugin/src/imagegen.mjs
+      - run: node --check plugin/src/status.mjs
+      - run: node --check plugin/src/tool.mjs
       - run: node --check tools/apply-profile.mjs
       - run: node --check tools/catalogue.mjs

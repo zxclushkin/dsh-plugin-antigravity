@@ -12,6 +12,7 @@ import path from 'node:path';
 import { createAntigravityClient, createTokenSource } from './src/antigravity.mjs';
 import { AntigravityAdapter } from './src/adapter.mjs';
 import { createImageGenerator, DEFAULT_ASPECT_RATIOS } from './src/imagegen.mjs';
+import { createStatusService, registerStatusRoutes } from './src/status.mjs';
 import { registerImageTool } from './src/tool.mjs';
 
 export const name = 'antigravity-llm';
@@ -184,12 +185,20 @@ export async function apply(ctx, config) {
   log('model provider registered (' + client.host + ')');
 
   // Built-in image generation as an agent tool: any model can draw, like the Antigravity IDE.
+  const generator = createImageGenerator({ client, adapter, config, log });
   let unregisterTool;
   if (config.features.imageGen !== false) {
-    const generator = createImageGenerator({ client, adapter, config, log });
     unregisterTool = registerImageTool(ctx, { generator, config, log });
     log('image_generate tool registered');
   }
+
+  // Settings GUI: a JSON API on the harness web server (the Client half reads it).
+  const statusService = createStatusService({ client, adapter, config, log });
+  ctx.inject(['webServer'], (child) => {
+    child.effect(() => registerStatusRoutes(child, { service: statusService, generator, config, log }),
+      'antigravity: settings routes');
+    log('settings API registered on /antigravity/*');
+  });
 
   // Warm the catalogue in the background so the first model-picker open is instant.
   adapter.loadCatalogue()

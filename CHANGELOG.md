@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 — settings GUI with account limits
+
+The plugin now ships a Client half: **Settings → Antigravity** in the DSH Web UI.
+
+- `client.js` registers a `settings.section` entry through `ctx.slots` and is loaded by the
+  harness web plugin table (`dsh.client` in `package.json`, `./client` export). The package is
+  discovered from the mounted row's own manifest, so the absolute-path install needs no
+  extra wiring.
+- Shows account tier/project, **per-model quotas** with bars and reset times, the live model
+  catalogue (context/output/thinking/image), and the effective `features.*` configuration,
+  with a refresh action and a one-click imageGen smoke test with inline preview.
+- `src/status.mjs` adds the host API behind it: `GET /antigravity/status` (60 s cache,
+  `?refresh=1`), `POST /antigravity/test-image`, `GET /antigravity/media/<name>`; routes are
+  registered through `ctx.inject(['webServer'])` so compositions without a web server skip
+  them cleanly.
+- Offline checks grew to 26 (status snapshot, JSON route, test-image route, media guard).
+
 ## 0.3.0 — built-in image generation tool
 
 The adapter now also registers a harness **tool**, so image generation is available to *any*
