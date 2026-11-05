@@ -102,6 +102,12 @@ export class AntigravityAdapter {
     return { width, height, maxBytes: Math.min(bytes, this.features.imageMaxBytes || 4 * 1024 * 1024) };
   }
 
+  // Provider-side request-image pricing. Declaring none falls back to the harness's neutral
+  // estimate; the method must exist because context compaction calls it before model switches.
+  imageRequestPricing() {
+    return undefined;
+  }
+
   /* ------------------------------------------------------------- catalogue */
 
   async loadCatalogue({ force = false } = {}) {

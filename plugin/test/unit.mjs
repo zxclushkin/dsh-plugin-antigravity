@@ -362,6 +362,12 @@ await checkAsync('listModels and resolveModel expose the catalogue', async () =>
   await assert.rejects(() => adapter.resolveModel('antigravity', 'nope'), /does not offer model/);
   assert.equal(adapter.providerRetryPolicy('antigravity'), undefined);
   assert.deepEqual(adapter.providerInfo('antigravity'), { id: 'antigravity', name: 'Antigravity' });
+  // Context compaction calls these before a model switch; a missing method fails the switch.
+  assert.equal(typeof adapter.imageRequestPricing, 'function');
+  assert.equal(adapter.imageRequestPricing('antigravity', 'gemini-3-flash'), undefined);
+  assert.equal(typeof adapter.imageRequestTarget, 'function');
+  assert.deepEqual(adapter.imageRequestTarget('antigravity', 'gemini-3-flash', { width: 10, height: 20, bytes: 100 }),
+    { width: 10, height: 20, maxBytes: 100 });
   const prepared = await adapter.prepareCall('antigravity', 'gemini-3-flash');
   assert.equal(prepared.model.id, 'gemini-3-flash');
   assert.equal(typeof prepared.stream, 'function');
