@@ -32,3 +32,26 @@ jobs:
       - run: node --check plugin/src/tool.mjs
       - run: node --check tools/apply-profile.mjs
       - run: node --check tools/catalogue.mjs
+
+  vscode:
+    name: vscode extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # Offline only. test/live.test.ts needs a real Antigravity install and quota.
+      - run: npm test
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: antigravity-chat-vsix
+          path: vscode/antigravity-chat.vsix

@@ -1,5 +1,8 @@
 # Antigravity Models for VS Code
 
+[![ci](https://github.com/zxclushkin/dsh-plugin-antigravity/actions/workflows/ci.yml/badge.svg)](https://github.com/zxclushkin/dsh-plugin-antigravity/actions/workflows/ci.yml)
+[![vscode release](https://github.com/zxclushkin/dsh-plugin-antigravity/actions/workflows/vscode-release.yml/badge.svg)](https://github.com/zxclushkin/dsh-plugin-antigravity/actions/workflows/vscode-release.yml)
+
 Google **Antigravity** models — Gemini 3.8/3.5/3/2.5, Claude Opus/Sonnet 5.5, GPT-OSS 120B and
 the Gemini image model — inside VS Code chat, as a native
 [`LanguageModelChatProvider`](https://code.visualstudio.com/api/extension-guides/ai/language-model-chat-provider).
@@ -49,19 +52,44 @@ installation:
 
 ## Install
 
-1. Build (or take a release) `antigravity-chat.vsix`:
-   ```powershell
-   npm install
-   npm run package
-   ```
-2. Install it:
-   ```powershell
-   code --install-extension vscode/antigravity-chat.vsix --force
-   ```
-3. In **Chat**, open the model picker → **Manage Models…** → **Antigravity** → check the
-   models you want. They then appear in the picker under "Antigravity".
-4. Pick a model and chat. Agent mode (tools, terminal, edits) works because the provider
-   implements the same tool protocol Copilot uses for its own models.
+The extension is not on the VS Code Marketplace — every
+[release](https://github.com/zxclushkin/dsh-plugin-antigravity/releases) carries the built VSIX,
+so installing from GitHub needs no clone, no build and no account.
+
+**From the release (recommended)**
+
+```powershell
+# GitHub CLI: downloads the VSIX from the latest release
+gh release download --repo zxclushkin/dsh-plugin-antigravity `
+  --pattern antigravity-chat.vsix --dir "$env:TEMP\antigravity-chat"
+
+code --install-extension "$env:TEMP\antigravity-chat\antigravity-chat.vsix" --force
+```
+
+Or open the [Releases page](https://github.com/zxclushkin/dsh-plugin-antigravity/releases),
+download `antigravity-chat.vsix`, then in VS Code: **Extensions → ⋯ → Install from VSIX…**.
+
+**From source**
+
+```powershell
+cd vscode
+npm install
+npm run package
+code --install-extension antigravity-chat.vsix --force
+```
+
+Then, in **Chat**, open the model picker → **Manage Models…** → **Antigravity** → check the
+models you want. They appear in the picker under "Antigravity"; pick one and chat. Agent mode
+(tools, terminal, edits) works because the provider implements the same tool protocol Copilot
+uses for its own models.
+
+Maintainers publish a release by pushing a version tag — CI builds, tests and attaches the VSIX
+(`.github/workflows/vscode-release.yml`):
+
+```powershell
+git tag vscode-v0.1.0
+git push origin vscode-v0.1.0
+```
 
 ## What works
 
