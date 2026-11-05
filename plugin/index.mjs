@@ -9,16 +9,28 @@
 // path, which does not resolve `@deepseek-ai/*` package specifiers.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createAntigravityClient, createTokenSource } from './src/antigravity.mjs';
 import { AntigravityAdapter } from './src/adapter.mjs';
 import { createImageGenerator, DEFAULT_ASPECT_RATIOS } from './src/imagegen.mjs';
+import { createSearchTool } from './src/search.mjs';
 import { createStatusService, registerStatusRoutes } from './src/status.mjs';
+import { createThrottle } from './src/throttle.mjs';
 import { registerImageTool } from './src/tool.mjs';
 
 export const name = 'antigravity-llm';
 
 /** The harness LLM and tool registries must exist before this plugin can register. */
 export const inject = ['llm', 'tools'];
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8')).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isBool = (value) => typeof value === 'boolean';
@@ -29,16 +41,19 @@ const isNonNegativeInt = (value) => Number.isInteger(value) && value >= 0;
 const TOP_LEVEL_KEYS = new Set([
   'enabled', 'credentialTarget', 'languageServerPath', 'clientId', 'clientSecret',
   'upstreamHost', 'userAgent', 'requestTimeoutMs', 'modelCacheTtlMs', 'debugDir', 'features',
+  // request shaping (account safety)
+  'maxConcurrentRequests', 'minRequestIntervalMs', 'rateLimitCooldownMs',
 ]);
 const FEATURE_KEYS = new Set([
   'googleSearch', 'includeThoughts',
   'defaultThinkingLevel', 'thinkingBudgets', 'responseMimeType', 'responseSchema',
   'imageOutput', 'imageAspectRatio', 'imageMaxBytes', 'mediaOutputDir', 'safetySettings',
   'maxOutputTokensCap',
-  // built-in image generation tool
+  // built-in agent tools
   'imageGen', 'imageModel', 'imageAspectRatios', 'imageMaxOutputTokens',
+  'googleSearchTool', 'searchModel',
 ]);
-const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput', 'imageGen'];
+const FEATURE_BOOLS = ['googleSearch', 'includeThoughts', 'imageOutput', 'imageGen', 'googleSearchTool'];
 const THINKING_LEVELS = ['low', 'medium', 'high'];
 const IMAGE_RATIOS = DEFAULT_ASPECT_RATIOS;
 
@@ -80,7 +95,7 @@ function validateFeatures(raw, issues) {
       }
     }
   }
-  for (const key of ['responseMimeType', 'imageAspectRatio', 'mediaOutputDir', 'imageModel']) {
+  for (const key of ['responseMimeType', 'imageAspectRatio', 'mediaOutputDir', 'imageModel', 'searchModel']) {
     if (raw[key] !== undefined) {
       if (!isStr(raw[key])) issues.push({ message: 'features.' + key + ' must be a non-empty string', path: ['features', key] });
       else out[key] = raw[key];
@@ -132,9 +147,14 @@ export const Config = {
           issues.push({ message: key + ' must be a non-empty string', path: [key] });
         }
       }
-      for (const key of ['requestTimeoutMs', 'modelCacheTtlMs']) {
+      for (const key of ['requestTimeoutMs', 'modelCacheTtlMs', 'maxConcurrentRequests']) {
         if (raw[key] !== undefined && !isPositiveInt(raw[key])) {
           issues.push({ message: key + ' must be a positive integer', path: [key] });
+        }
+      }
+      for (const key of ['minRequestIntervalMs', 'rateLimitCooldownMs']) {
+        if (raw[key] !== undefined && !isNonNegativeInt(raw[key])) {
+          issues.push({ message: key + ' must be a non-negative integer', path: [key] });
         }
       }
       if (raw.enabled !== undefined && !isBool(raw.enabled)) {
@@ -154,6 +174,9 @@ export const Config = {
           requestTimeoutMs: raw.requestTimeoutMs ?? 300_000,
           modelCacheTtlMs: raw.modelCacheTtlMs ?? 600_000,
           debugDir: raw.debugDir,
+          maxConcurrentRequests: raw.maxConcurrentRequests ?? 2,
+          minRequestIntervalMs: raw.minRequestIntervalMs ?? 0,
+          rateLimitCooldownMs: raw.rateLimitCooldownMs ?? 60_000,
           features,
         },
       };
@@ -173,10 +196,17 @@ export async function apply(ctx, config) {
   };
   const tokens = createTokenSource({ ...config, log });
   const client = createAntigravityClient({ ...config, tokens, log });
+  const throttle = createThrottle({
+    maxConcurrent: config.maxConcurrentRequests,
+    minIntervalMs: config.minRequestIntervalMs,
+    cooldownMs: config.rateLimitCooldownMs,
+    log,
+  });
   const adapter = new AntigravityAdapter({
     client,
     config,
     log,
+    throttle,
     // The attachment service may mount after this plugin; resolve it lazily.
     getAttachments: () => ctx.get('attachments'),
   });
@@ -184,16 +214,35 @@ export async function apply(ctx, config) {
   const registration = ctx.llm.registerAdapter(['antigravity'], adapter);
   log('model provider registered (' + client.host + ')');
 
-  // Built-in image generation as an agent tool: any model can draw, like the Antigravity IDE.
-  const generator = createImageGenerator({ client, adapter, config, log });
-  let unregisterTool;
+  // Built-in agent tools: image generation (any model can draw) and grounded web search
+  // (the endpoint cannot ground a tool-using turn, so search gets its own sub-request).
+  const toolDisposers = [];
+  const registeredTools = [];
+  const generator = createImageGenerator({ client, adapter, config, log, throttle });
   if (config.features.imageGen !== false) {
-    unregisterTool = registerImageTool(ctx, { generator, config, log });
+    toolDisposers.push(registerImageTool(ctx, { generator, config, log }));
+    registeredTools.push('image_generate');
     log('image_generate tool registered');
+  }
+  if (config.features.googleSearchTool !== false) {
+    toolDisposers.push(ctx.tools.register(createSearchTool({ client, config, log, throttle })));
+    registeredTools.push('google_search');
+    log('google_search tool registered');
   }
 
   // Settings GUI: a JSON API on the harness web server (the Client half reads it).
-  const statusService = createStatusService({ client, adapter, config, log });
+  const statusService = createStatusService({
+    client,
+    adapter,
+    config,
+    log,
+    meta: () => ({
+      version: PACKAGE_VERSION,
+      tools: [...registeredTools],
+      throttle: throttle.state(),
+      lastError: adapter.lastError,
+    }),
+  });
   ctx.inject(['webServer'], (child) => {
     child.effect(() => registerStatusRoutes(child, {
       service: statusService,
@@ -218,7 +267,7 @@ export async function apply(ctx, config) {
 
   return () => {
     try { registration?.(); } catch { /* already disposed */ }
-    try { unregisterTool?.(); } catch { /* already disposed */ }
+    for (const dispose of toolDisposers) { try { dispose?.(); } catch { /* already disposed */ } }
     log('model provider unregistered');
   };
 }

@@ -160,7 +160,8 @@ function Toggle(props) {
       React.useEffect(() => { setDraft(Object.assign({}, features)); }, [JSON.stringify(features)]);
 
       const toggles = [
-        ['googleSearch', 'Google Search grounding (эндпоинт разрешает только на запросах без инструментов)'],
+        ['googleSearchTool', 'Инструмент google_search: агент может искать в Google с источниками'],
+        ['googleSearch', 'Grounding на прямых запросах без инструментов (эндпоинт так разрешает)'],
         ['imageGen', 'Встроенный imageGen: инструмент image_generate для любой модели'],
         ['imageOutput', 'Image-модель в списке моделей'],
         ['includeThoughts', 'includeThoughts (эндпоинт его игнорирует)'],
@@ -273,15 +274,43 @@ function Toggle(props) {
         props.accountsError ? h('div', { style: { ...S.muted, marginTop: '6px' } }, 'loadCodeAssist: ' + props.accountsError) : null);
     }
 
+    function RuntimeSection(props) {
+      const plugin = props.plugin || {};
+      const limits = props.limits || {};
+      const throttle = plugin.throttle || {};
+      const lastError = plugin.lastError;
+      const rows = [
+        ['Версия плагина', plugin.version || '—'],
+        ['Инструменты', (plugin.tools || []).join(', ') || 'нет'],
+        ['Параллельных запросов', String(limits.maxConcurrentRequests ?? throttle.maxConcurrent ?? '—')],
+        ['Интервал между запросами', (limits.minRequestIntervalMs ?? throttle.minIntervalMs ?? 0) + ' мс'],
+        ['Пауза после 429', Math.round((limits.rateLimitCooldownMs ?? throttle.cooldownMs ?? 0) / 1000) + ' c'],
+        ['Сейчас в работе', String(throttle.active ?? 0) + ', в очереди ' + String(throttle.queued ?? 0)],
+      ];
+      return h(Card, { title: 'Служебное' },
+        rows.map(([label, value]) => h('div', { key: label, style: { ...S.row, justifyContent: 'space-between', padding: '3px 0' } },
+          h('span', { style: S.label }, label),
+          h('span', { style: { ...S.value, textAlign: 'right' } }, value))),
+        throttle.cooldownUntil
+          ? h('div', { style: { ...S.muted, marginTop: '6px', color: COLOR.warn } },
+            'Пауза после rate limit до ' + formatTime(throttle.cooldownUntil))
+          : null,
+        lastError
+          ? h('div', { style: { ...S.error, marginTop: '8px' } },
+            'Последняя ошибка (' + formatTime(lastError.at) + ', ' + lastError.code + '): ' + lastError.message)
+          : null);
+    }
+
     function AntigravitySettings() {
       const status = useStatus();
       const data = status.data || {};
+      const plugin = data.plugin || {};
       return h('div', { style: S.root },
         h('div', { style: S.header },
           h('div', null,
-            h('h2', { style: S.title }, 'Antigravity'),
+            h('h2', { style: S.title }, 'Antigravity' + (plugin.version ? ' v' + plugin.version : '')),
             h('p', { style: S.subtitle },
-              'Модели Google Antigravity в этом харнессе: лимиты аккаунта, каталог и встроенный imageGen. ',
+              'Модели Google Antigravity в этом харнессе: лимиты аккаунта, каталог, инструменты и встроенный imageGen. ',
               data.at ? 'Данные на ' + formatTime(data.at) + (status.cached ? ' (кэш)' : '') : '')),
           h('button', { type: 'button', style: S.button, disabled: status.busy, onClick: () => status.reload(true) },
             status.busy ? 'Обновление…' : 'Обновить')),
@@ -294,6 +323,7 @@ function Toggle(props) {
         status.phase !== 'loading' ? h(QuotaSection, { quotas: data.quotas, error: data.quotasError }) : null,
         status.phase !== 'loading' ? h(ModelsSection, { models: data.models, error: data.modelsError }) : null,
         status.phase !== 'loading' ? h(FeaturesSection, { features: data.features, onSaved: () => status.reload(false) }) : null,
+        status.phase !== 'loading' ? h(RuntimeSection, { plugin, limits: data.limits }) : null,
         h(TestImageSection));
     }
 

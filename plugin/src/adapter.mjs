@@ -74,16 +74,19 @@ export class AntigravityAdapter {
    * @param {() => object | undefined} deps.getAttachments lazy attachment-service getter.
    * @param {(message: string) => void} [deps.log]
    */
-  constructor({ client, config, getAttachments, log }) {
+  constructor({ client, config, getAttachments, log, throttle }) {
     this.client = client;
     this.config = config;
     this.features = config.features || {};
     this.getAttachments = getAttachments || (() => undefined);
     this.log = log || (() => {});
+    this.throttle = throttle || null;
     this.catalogue = null;
     this.catalogueAt = 0;
     this.catalogueRequest = null;
     this.mediaDir = this.features.mediaOutputDir || defaultMediaDir();
+    /** Last failure seen by stream(), surfaced in the settings GUI. */
+    this.lastError = null;
   }
 
   providerInfo(provider) {
@@ -220,13 +223,20 @@ export class AntigravityAdapter {
 
     let response;
     try {
-      response = await this.client.openStream({ model: wireModel, request, signal });
+      // Model calls carry no internal retries: dsh-llm-retry owns them. The throttle keeps the
+      // traffic shaped like a normal IDE session (concurrency, spacing, 429 cooldown).
+      const send = () => this.client.openStream({ model: wireModel, request, signal });
+      response = this.throttle ? await this.throttle.run(send, signal) : await send();
     } catch (error) {
-      throw classifyFailure(error, signal);
+      const failure = classifyFailure(error, signal);
+      this.recordError(failure);
+      throw failure;
     }
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw httpError(response.status, text, response.headers);
+      const failure = httpError(response.status, text, response.headers);
+      this.recordError(failure);
+      throw failure;
     }
 
     const index = { text: undefined, reasoning: undefined, next: 0 };
@@ -316,12 +326,28 @@ export class AntigravityAdapter {
       yield { type: 'finish', reason };
     } catch (error) {
       if (signal && signal.aborted) throw abortedError();
-      throw classifyFailure(error, signal);
+      const failure = classifyFailure(error, signal);
+      this.recordError(failure);
+      throw failure;
     } finally {
       if (!finishEmitted) {
         // An abandoned iterator (harness cancellation) must not leave the connection open.
         try { await response.body?.cancel?.(); } catch { /* already closed */ }
       }
+    }
+  }
+
+  /** Remember the last failure for the settings GUI and arm the 429 cooldown. */
+  recordError(failure) {
+    const facts = failure && failure.failure;
+    const code = (facts && facts.code) || (failure && failure.code) || 'ERROR';
+    this.lastError = {
+      at: new Date().toISOString(),
+      code,
+      message: String(failure && failure.message ? failure.message : failure).slice(0, 500),
+    };
+    if ((code === 'RATE_LIMIT' || code === 'QUOTA') && this.throttle) {
+      this.throttle.noteRateLimit(facts ? facts.providerRetryAfterMs : undefined);
     }
   }
 

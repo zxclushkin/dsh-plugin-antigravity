@@ -19,9 +19,10 @@ export function imageToolDefinition({ generator, config, log }) {
     // tool timeout would be too small.
     timeoutMs: 300_000,
     description:
-      'Generate an image with the built-in image generation model (Google Antigravity imageGen) '
-      + 'and save it as a file the user can see inline. Use it whenever the user asks for a picture, '
-      + 'illustration, icon, diagram or photo. It returns the saved absolute paths; refer to them in '
+      'Generate or edit an image with the built-in image generation model (Google Antigravity '
+      + 'imageGen) and save it as a file the user can see inline. Use it whenever the user asks '
+      + 'for a picture, illustration, icon, diagram or photo, or asks to change an existing image '
+      + '(pass its path as reference_path). It returns the saved absolute paths; refer to them in '
       + 'your final answer as markdown images.',
     parameters: {
       type: 'object',
@@ -29,7 +30,7 @@ export function imageToolDefinition({ generator, config, log }) {
       properties: {
         prompt: {
           type: 'string',
-          description: 'What to draw: subject, style, colors, composition. Be descriptive.',
+          description: 'What to draw (or how to change the reference image): subject, style, colors, composition.',
         },
         aspect_ratio: {
           type: 'string',
@@ -39,6 +40,10 @@ export function imageToolDefinition({ generator, config, log }) {
         count: {
           type: 'integer',
           description: 'How many images to generate, 1 to 4 (default 1).',
+        },
+        reference_path: {
+          type: 'string',
+          description: 'Absolute path of an existing .png/.jpg/.jpeg/.webp image to edit (image-to-image).',
         },
       },
       required: ['prompt'],
@@ -87,6 +92,7 @@ export function imageToolDefinition({ generator, config, log }) {
         prompt: args.prompt,
         aspectRatio: args.aspect_ratio,
         count: args.count,
+        referencePath: args.reference_path,
         signal: exec && exec.signal,
       });
       return {

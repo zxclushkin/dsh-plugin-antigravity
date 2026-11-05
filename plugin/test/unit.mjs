@@ -12,7 +12,9 @@ import {
 } from '../src/gemini.mjs';
 import { AntigravityError, httpError, transportError } from '../src/errors.mjs';
 import { createImageGenerator, imageMarkdown } from '../src/imagegen.mjs';
+import { createSearchTool, groundedSearch, SEARCH_TOOL_NAME } from '../src/search.mjs';
 import { createStatusRoutes, createStatusService } from '../src/status.mjs';
+import { createThrottle } from '../src/throttle.mjs';
 import { imageToolDefinition, IMAGE_TOOL_NAME } from '../src/tool.mjs';
 
 let passed = 0;
@@ -684,6 +686,173 @@ await checkAsync('image model ignores agent tools and keeps an image-sized outpu
     {}, async () => null);
   assert.ok(chatRequest.request.tools, 'chat models keep the tool list');
   assert.equal(chatRequest.request.generationConfig.maxOutputTokens, 256);
+});
+
+/* ------------------------------------------------- throttle / search / editing */
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+await checkAsync('throttle limits concurrency and queues the rest', async () => {
+  const throttle = createThrottle({ maxConcurrent: 1 });
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const first = throttle.run(async () => { await gate; return 'a'; });
+  await tick();
+  const second = throttle.run(async () => 'b');
+  await tick();
+  assert.equal(throttle.state().active, 1);
+  assert.equal(throttle.state().queued, 1);
+  release();
+  assert.equal(await first, 'a');
+  assert.equal(await second, 'b');
+  assert.equal(throttle.state().active, 0);
+});
+
+await checkAsync('throttle spaces requests and honours the 429 cooldown', async () => {
+  let clock = 0;
+  const slept = [];
+  const throttle = createThrottle({
+    maxConcurrent: 2,
+    minIntervalMs: 100,
+    cooldownMs: 5_000,
+    now: () => clock,
+    sleep: async (ms) => { slept.push(ms); clock += ms; },
+  });
+  await throttle.run(async () => 1);
+  await throttle.run(async () => 2);
+  assert.ok(slept.some((ms) => ms >= 100), 'second request waited for the interval');
+
+  throttle.noteRateLimit(4_000);
+  assert.ok(throttle.state().cooldownUntil, 'cooldown is armed');
+  slept.length = 0;
+  await throttle.run(async () => 3);
+  assert.ok(slept.length > 0, 'a request waits out the cooldown');
+  assert.equal(throttle.state().cooldownUntil, null);
+});
+
+check('search tool fits the harness schema subset', () => {
+  const tool = createSearchTool({ client: {}, config: { features: {} }, log: () => {} });
+  assert.equal(tool.name, SEARCH_TOOL_NAME);
+  assert.deepEqual(tool.parameters.required, ['query']);
+  assert.equal(tool.output.schema.type, 'object');
+  const blocks = tool.output.render({}, {
+    answer: 'Paris is the capital.',
+    sources: [{ title: 'Example', uri: 'https://example.com' }],
+  });
+  const text = blocks.map((block) => block.text).join('\n');
+  assert.match(text, /Paris is the capital/);
+  assert.match(text, /\[1\] Example — https:\/\/example\.com/);
+});
+
+await checkAsync('groundedSearch parses answer, sources and queries', async () => {
+  const client = {
+    openStream: async () => ({ ok: true, status: 200, body: {} }),
+    async *streamEvents() {
+      yield { type: 'text', text: 'Lando Norris ' };
+      yield { type: 'text', text: 'won the 2025 title.' };
+      yield {
+        type: 'grounding',
+        metadata: {
+          webSearchQueries: ['2025 f1 champion'],
+          groundingChunks: [
+            { web: { uri: 'https://a.example', title: 'A' } },
+            { web: { uri: 'https://a.example', title: 'A duplicate' } },
+            { web: { uri: 'https://b.example', title: 'B' } },
+          ],
+        },
+      };
+    },
+  };
+  const result = await groundedSearch({ client, model: 'gemini-3.5-flash-lite', query: 'who won f1 2025' });
+  assert.equal(result.text, 'Lando Norris won the 2025 title.');
+  assert.equal(result.sources.length, 2, 'sources are de-duplicated by uri');
+  assert.deepEqual(result.queries, ['2025 f1 champion']);
+});
+
+await checkAsync('image generator sends a reference image when editing', async () => {
+  const dir = 'C:/lab/antigravity/.tmp/test-imagegen';
+  fs.mkdirSync(dir, { recursive: true });
+  const reference = dir + '/reference.png';
+  fs.writeFileSync(reference, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  let sent = null;
+  const client = {
+    async openStream(request) {
+      sent = request;
+      return { ok: true, status: 200, body: {} };
+    },
+    async *streamEvents() {
+      yield { type: 'media', part: { inlineData: { mimeType: 'image/jpeg', data: Buffer.from('out').toString('base64') } } };
+    },
+  };
+  const generator = createImageGenerator({
+    client,
+    adapter: { loadCatalogue: async () => ({ imageModels: { 'gemini-3.1-flash-image': {} } }) },
+    config: { features: { mediaOutputDir: dir } },
+    log: () => {},
+  });
+  const result = await generator.generate({ prompt: 'make it blue', referencePath: reference });
+  assert.equal(result.images.length, 1);
+  const parts = sent.request.contents[0].parts;
+  assert.equal(parts[0].inlineData.mimeType, 'image/png');
+  assert.equal(parts[0].inlineData.data, Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'));
+  assert.equal(parts[1].text, 'make it blue');
+  assert.equal(sent.retries, 2, 'tool sub-calls keep a couple of retries');
+  await assert.rejects(() => generator.generate({ prompt: 'x', referencePath: dir + '/missing.png' }), /does not exist/);
+  fs.writeFileSync(dir + '/bad.txt', 'x');
+  await assert.rejects(() => generator.generate({ prompt: 'x', referencePath: dir + '/bad.txt' }), /must be a \.png/);
+});
+
+await checkAsync('adapter records the last failure and arms the cooldown', async () => {
+  const throttle = createThrottle({ maxConcurrent: 1, cooldownMs: 1_000 });
+  const failingClient = {
+    host: 'stub',
+    fetchModels: async () => ({ models: { 'gemini-3-flash': { id: 'gemini-3-flash' } }, defaultModelId: null }),
+    async openStream() {
+      const error = new Error('upstream 429');
+      error.status = 429;
+      error.body = '{"error":{"message":"QUOTA_EXHAUSTED"}}';
+      throw error;
+    },
+    async *streamEvents() {},
+  };
+  const adapter = new AntigravityAdapter({ client: failingClient, config: { features: {} }, throttle, log: () => {} });
+  await assert.rejects(() => collectChunks(adapter, {
+    provider: 'antigravity', model: 'gemini-3-flash',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  }));
+  assert.equal(adapter.lastError.code, 'QUOTA');
+  assert.ok(throttle.state().cooldownUntil, 'the failure armed the shared cooldown');
+});
+
+await checkAsync('config accepts the new throttle keys and search feature', async () => {
+  const result = Config['~standard'].validate({
+    maxConcurrentRequests: 3,
+    minRequestIntervalMs: 250,
+    rateLimitCooldownMs: 30_000,
+    features: { googleSearchTool: true, searchModel: 'gemini-3.5-flash-lite' },
+  });
+  assert.equal(result.issues, undefined);
+  assert.equal(result.value.maxConcurrentRequests, 3);
+  assert.equal(result.value.minRequestIntervalMs, 250);
+  assert.equal(result.value.rateLimitCooldownMs, 30_000);
+  assert.equal(result.value.features.googleSearchTool, true);
+  assert.ok(Config['~standard'].validate({ maxConcurrentRequests: 0 }).issues);
+  assert.ok(Config['~standard'].validate({ minRequestIntervalMs: -1 }).issues);
+});
+
+await checkAsync('status snapshot exposes version, tools, limits and last error', async () => {
+  const service = createStatusService({
+    client: statusStub(),
+    adapter: statusStub(),
+    config: { ...guiConfig, maxConcurrentRequests: 2, minRequestIntervalMs: 0, rateLimitCooldownMs: 60_000 },
+    log: () => {},
+    meta: () => ({ version: '0.5.0', tools: ['image_generate', 'google_search'], throttle: { active: 0, queued: 0 }, lastError: null }),
+  });
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.plugin.version, '0.5.0');
+  assert.deepEqual(snapshot.plugin.tools, ['image_generate', 'google_search']);
+  assert.equal(snapshot.limits.maxConcurrentRequests, 2);
+  assert.equal(snapshot.limits.rateLimitCooldownMs, 60_000);
 });
 
 console.log('\n' + passed + ' checks passed');

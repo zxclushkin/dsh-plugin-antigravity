@@ -32,7 +32,7 @@ async function readBody(req, limit = 1 * 1024 * 1024) {
 }
 
 /** Snapshot of account, quota, catalogue and effective plugin configuration. */
-export function createStatusService({ client, adapter, config, log }) {
+export function createStatusService({ client, adapter, config, log, meta }) {
   let cached = null;
   let cachedAt = 0;
 
@@ -76,11 +76,17 @@ export function createStatusService({ client, adapter, config, log }) {
     return {
       ok: true,
       at: new Date().toISOString(),
+      plugin: meta ? meta() : {},
       upstream: client.host,
       credentialTarget: config.credentialTarget,
       userAgent: config.userAgent,
       debugDir: config.debugDir || null,
       features: config.features || {},
+      limits: {
+        maxConcurrentRequests: config.maxConcurrentRequests,
+        minRequestIntervalMs: config.minRequestIntervalMs,
+        rateLimitCooldownMs: config.rateLimitCooldownMs,
+      },
       account: account || {},
       accountsError: account && account.error ? account.error : undefined,
       quotas: Array.isArray(quotas) ? quotas : [],
@@ -127,6 +133,7 @@ function safeMediaName(name) {
 /** Features the GUI may change live (everything else stays a profile-patch decision). */
 const EDITABLE_FEATURES = {
   googleSearch: 'boolean',
+  googleSearchTool: 'boolean',
   includeThoughts: 'boolean',
   imageGen: 'boolean',
   imageOutput: 'boolean',

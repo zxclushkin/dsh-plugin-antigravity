@@ -30,14 +30,40 @@ export async function resolveImageModel(adapter, features) {
  * Create the image generator: one call = one image (candidateCount > 1 is rejected by the
  * endpoint, so `count` is implemented as sequential calls).
  */
-export function createImageGenerator({ client, adapter, config, log }) {
+export function createImageGenerator({ client, adapter, config, log, throttle }) {
   const features = config.features || {};
   const mediaDir = features.mediaOutputDir || path.join(os.tmpdir(), 'dsh-antigravity-media');
   const aspectRatios = features.imageAspectRatios || DEFAULT_ASPECT_RATIOS;
 
-  async function generateOne({ prompt, aspectRatio, model, signal }) {
+  /** Read an existing image for image-to-image editing, with size and type guards. */
+  function readReference(referencePath) {
+    const file = path.resolve(String(referencePath));
+    const extension = path.extname(file).toLowerCase();
+    const mimeType = extension === '.png' ? 'image/png'
+      : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+        : extension === '.webp' ? 'image/webp' : null;
+    if (!mimeType) {
+      throw new AntigravityError('reference_path must be a .png, .jpg/.jpeg or .webp image', ERROR_CODES.INVALID_REQUEST);
+    }
+    let stat;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      throw new AntigravityError('reference_path does not exist: ' + file, ERROR_CODES.INVALID_REQUEST);
+    }
+    if (!stat.isFile()) throw new AntigravityError('reference_path is not a file: ' + file, ERROR_CODES.INVALID_REQUEST);
+    if (stat.size > 20 * 1024 * 1024) {
+      throw new AntigravityError('reference image is larger than 20 MiB', ERROR_CODES.INVALID_REQUEST);
+    }
+    return { inlineData: { mimeType, data: fs.readFileSync(file).toString('base64') } };
+  }
+
+  async function generateOne({ prompt, aspectRatio, model, signal, reference }) {
+    const parts = [];
+    if (reference) parts.push(reference);
+    parts.push({ text: prompt });
     const request = {
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts }],
       generationConfig: {
         maxOutputTokens: features.imageMaxOutputTokens || 4096,
         responseModalities: ['TEXT', 'IMAGE'],
@@ -46,7 +72,10 @@ export function createImageGenerator({ client, adapter, config, log }) {
     };
     let response;
     try {
-      response = await client.openStream({ model, request, signal });
+      // Tool sub-calls are not covered by dsh-llm-retry: a couple of retries help with the
+      // transient 429/503 answers the endpoint gives under load.
+      const send = () => client.openStream({ model, request, signal, retries: 2 });
+      response = throttle ? await throttle.run(send, signal) : await send();
     } catch (error) {
       throw error instanceof AntigravityError ? error : transportError(error, signal);
     }
@@ -90,8 +119,8 @@ export function createImageGenerator({ client, adapter, config, log }) {
 
   return {
     aspectRatios,
-    /** Generate 1..4 images for one prompt. */
-    async generate({ prompt, aspectRatio, count = 1, signal }) {
+    /** Generate 1..4 images for one prompt; `referencePath` turns it into an edit. */
+    async generate({ prompt, aspectRatio, count = 1, referencePath, signal }) {
       const text = String(prompt || '').trim();
       if (!text) throw new AntigravityError('image prompt must not be empty', ERROR_CODES.INVALID_REQUEST);
       const ratio = aspectRatio || features.imageAspectRatio || '1:1';
@@ -100,11 +129,12 @@ export function createImageGenerator({ client, adapter, config, log }) {
       }
       const total = Math.max(1, Math.min(4, Number(count) || 1));
       const model = await resolveImageModel(adapter, features);
+      const reference = referencePath ? readReference(referencePath) : undefined;
       const images = [];
       const notes = [];
       for (let index = 0; index < total; index++) {
         if (signal && signal.aborted) throw new AntigravityError('image generation aborted', ERROR_CODES.ABORTED);
-        const result = await generateOne({ prompt: text, aspectRatio: ratio, model, signal });
+        const result = await generateOne({ prompt: text, aspectRatio: ratio, model, signal, reference });
         images.push({ path: result.file, mimeType: result.mimeType, bytes: result.bytes, aspectRatio: ratio });
         if (result.text) notes.push(result.text);
       }

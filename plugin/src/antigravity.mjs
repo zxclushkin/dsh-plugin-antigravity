@@ -365,18 +365,22 @@ export function createAntigravityClient(config = {}) {
     /**
      * Start a streaming generation and return the raw fetch Response.
      * The caller parses SSE and owns cancellation.
+     * `retries` covers tool sub-calls (image generation, grounded search), which do not go
+     * through dsh-llm-retry. Model calls pass 0: the harness retry layer owns those, and
+     * retrying here would double the delay.
      */
-    async openStream({ model, request, signal }) {
+    async openStream({ model, request, signal, retries = 0 }) {
       const project = await this.getProject();
       const payload = { model, request };
       if (project) payload.project = project;
-      // No overall deadline: a long generation is normal. The gateway enforces stream idleness.
+      // No overall deadline: a long generation is normal.
+      const attempts = Number.isInteger(retries) && retries > 0 ? retries : 0;
       for (let attempt = 0; ; attempt++) {
         const res = await rawPost('/v1internal:streamGenerateContent?alt=sse', payload,
           { signal, noTimeout: true });
         if (res.ok) return res;
         const text = await res.text().catch(() => '');
-        const retryable = attempt < 2 && isRetryableStatus(res.status, text) && !signal?.aborted;
+        const retryable = attempt < attempts && isRetryableStatus(res.status, text) && !signal?.aborted;
         if (!retryable) {
           const err = new Error('antigravity streamGenerateContent failed: HTTP ' + res.status + ' ' +
             text.slice(0, 400));
