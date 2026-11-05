@@ -39,8 +39,11 @@ window.__ModuleLoader__.load({
         color: COLOR.text, fontSize: '12px', padding: '6px 12px', cursor: 'pointer',
       },
       buttonPrimary: {
-        border: '1px solid ' + COLOR.brand, borderRadius: '8px', background: COLOR.brand,
-        color: '#fff', fontSize: '12px', padding: '6px 12px', cursor: 'pointer',
+        // No "on-brand" label token exists in the theme, and the brand accent can be white in
+        // the dark theme (white-on-white "Save"). Accent-outline on a raised surface is readable
+        // in both themes regardless of the accent's luminance.
+        border: '1px solid ' + COLOR.brand, borderRadius: '8px', background: COLOR.surfaceNested,
+        color: COLOR.brand, fontSize: '12px', fontWeight: 600, padding: '6px 12px', cursor: 'pointer',
       },
       barTrack: { height: '6px', borderRadius: '999px', background: COLOR.surfaceNested, overflow: 'hidden', flex: 1, minWidth: '80px' },
       barFill: (fraction, color) => ({ height: '100%', width: Math.max(0, Math.min(1, fraction)) * 100 + '%', background: color, borderRadius: '999px' }),

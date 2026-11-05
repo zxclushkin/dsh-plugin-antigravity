@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3 — visible primary buttons
+
+- The Save/Generate/Search buttons were filled with the brand accent and hard-coded white text.
+  In the dark theme the brand accent (`--dsw-alias-brand-primary`) is white, so the label vanished
+  into the button. The theme has no "on-brand" label token, so primary buttons are now
+  accent-outlined on a raised surface (`border`/`text` = brand, `background` = `bg-layer-2`), which
+  stays readable in both themes regardless of the accent's luminance.
+
 ## 0.6.2 — readable selects on the settings page
 
 - Fixed the Thinking and Aspect dropdowns: the browser paints the native `<select>` popup itself,
