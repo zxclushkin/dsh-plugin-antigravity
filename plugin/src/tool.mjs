@@ -15,6 +15,9 @@ export function imageToolDefinition({ generator, config, log }) {
   const aspectRatios = generator.aspectRatios;
   return {
     name: IMAGE_TOOL_NAME,
+    // One image takes ~10-30s; `count: 4` generates sequentially, so the registry default
+    // tool timeout would be too small.
+    timeoutMs: 300_000,
     description:
       'Generate an image with the built-in image generation model (Google Antigravity imageGen) '
       + 'and save it as a file the user can see inline. Use it whenever the user asks for a picture, '

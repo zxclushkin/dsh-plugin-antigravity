@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AntigravityError, ERROR_CODES, httpError, transportError, abortedError } from './errors.mjs';
+import { imageMarkdown } from './imagegen.mjs';
 import {
   buildGenerateRequest, citationText, encodeToolCallId, groundingText, mapFinishReason, mapUsage,
   reasoningEffortsFor,
@@ -276,7 +277,11 @@ export class AntigravityAdapter {
           const saved = await this.persistMedia(event.part, signal);
           if (saved) {
             visible = true;
-            yield delta('text', '\n\n![' + saved.kind + '](' + saved.file + ')\n\n');
+            // Markdown image destinations must use forward slashes; the chat UI resolves the
+            // absolute path and renders it inline.
+            yield delta('text', '\n\n' + (saved.kind === 'image'
+              ? imageMarkdown(saved.file)
+              : '[audio](' + String(saved.file).replace(/\\/g, '/') + ')') + '\n\n');
           }
         } else if (event.type === 'grounding') {
           grounding = groundingText(event.metadata);

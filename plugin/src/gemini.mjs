@@ -318,9 +318,11 @@ export async function buildGenerateRequest(options, model, features, resolveImag
   if (systemInstruction) request.systemInstruction = systemInstruction;
 
   const declarations = convertToolDeclarations(options.tools);
-  const serverTools = serverToolDeclarations(features);
   const tools = serverToolDeclarations(features);
-  if (declarations.length > 0) {
+  if (model.kind === 'image') {
+    // The image model is a one-shot generator: function declarations on it are meaningless
+    // (and may make it try to call tools it cannot use), so the agent's tool list is dropped.
+  } else if (declarations.length > 0) {
     // The endpoint rejects googleSearch together with functionDeclarations (HTTP 400, even
     // with include_server_side_tool_invocations), so a tool-using agent turn cannot ground.
     request.tools = [{ functionDeclarations: declarations }];
@@ -334,7 +336,14 @@ export async function buildGenerateRequest(options, model, features, resolveImag
     const caps = [options.maxTokens];
     if (Number(model.maxTokens) > 0) caps.push(Number(model.maxTokens));
     if (Number(features.maxOutputTokensCap) > 0) caps.push(Number(features.maxOutputTokensCap));
-    generationConfig.maxOutputTokens = Math.min(...caps);
+    let maxOutputTokens = Math.min(...caps);
+    if (model.kind === 'image') {
+      // A generated image costs output tokens (about 1-1.5k); a small chat-sized cap would
+      // truncate it into finishReason=MAX_TOKENS with no pixels.
+      const floor = Math.min(4096, Number(model.maxTokens) > 0 ? Number(model.maxTokens) : 4096);
+      maxOutputTokens = Math.max(maxOutputTokens, floor);
+    }
+    generationConfig.maxOutputTokens = maxOutputTokens;
   }
   if (Array.isArray(options.stop) && options.stop.length > 0) {
     generationConfig.stopSequences = options.stop.filter((value) => typeof value === 'string' && value).slice(0, 5);

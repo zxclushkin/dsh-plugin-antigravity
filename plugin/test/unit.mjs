@@ -343,7 +343,8 @@ await checkAsync('stream saves generated media and links it', async () => {
   });
   const chunks = await collectChunks(adapter, { ...ask, model: 'gemini-3.1-flash-image' });
   const text = chunks.filter((chunk) => chunk.type === 'text-delta').map((chunk) => chunk.text).join('');
-  assert.match(text, /!\[image\]\(.+\.jpeg\)/);
+  assert.match(text, /!\[[^\]]+\]\(.+\.jpeg\)/);
+  assert.match(text, /\(C:\/lab\/antigravity\/\.tmp\/test-media\//); // forward slashes for markdown
 });
 
 await checkAsync('listModels and resolveModel expose the catalogue', async () => {
@@ -654,6 +655,35 @@ await checkAsync('client bundle registers the settings section', async () => {
   assert.equal(registration.options.order, 30);
   assert.equal(registration.options.label, 'Antigravity');
   assert.equal(typeof registration.component, 'function');
+});
+
+await checkAsync('image model ignores agent tools and keeps an image-sized output budget', async () => {
+  const options = {
+    provider: 'antigravity',
+    model: 'gemini-3.1-flash-image',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'draw a cat' }] }],
+    tools: [{ name: 'ping', description: 'noop' }],
+    maxTokens: 256,
+  };
+  const buildOptions = {
+    log: () => {},
+    sessionId: 's',
+  };
+  const imageModel = {
+    id: 'gemini-3.1-flash-image', kind: 'image', thinkingStyle: 'level', maxTokens: 65536,
+  };
+  const imageRequest = await buildGenerateRequest(
+    options, imageModel, {}, async () => null);
+  assert.equal(imageRequest.request.tools, undefined, 'image model must not receive function declarations');
+  assert.ok(imageRequest.request.generationConfig.maxOutputTokens >= 4096,
+    'image model needs an output budget large enough for the pixels');
+
+  const chatRequest = await buildGenerateRequest(
+    options,
+    { id: 'gemini-3-flash', kind: 'chat', thinkingStyle: 'level', maxTokens: 65536 },
+    {}, async () => null);
+  assert.ok(chatRequest.request.tools, 'chat models keep the tool list');
+  assert.equal(chatRequest.request.generationConfig.maxOutputTokens, 256);
 });
 
 console.log('\n' + passed + ' checks passed');
