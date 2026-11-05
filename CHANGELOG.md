@@ -15,7 +15,8 @@ The plugin now ships a Client half: **Settings → Antigravity** in the DSH Web 
   `?refresh=1`), `POST /antigravity/test-image`, `GET /antigravity/media/<name>`; routes are
   registered through `ctx.inject(['webServer'])` so compositions without a web server skip
   them cleanly.
-- Offline checks grew to 26 (status snapshot, JSON route, test-image route, media guard).
+- POST /antigravity/config edits the editable eatures.* flags through the harness config editor, so toggles apply live.
+- Offline checks grew to 27 (status snapshot, JSON route, test-image route, media guard).
 
 ## 0.3.0 — built-in image generation tool
 

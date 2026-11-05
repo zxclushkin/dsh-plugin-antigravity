@@ -30,7 +30,7 @@ Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.
 
 | Check | Result |
 |---|---|
-| Offline unit checks (translation, chunk protocol, metadata, errors, GUI routes) | **26/26** |
+| Offline unit checks (translation, chunk protocol, metadata, errors, GUI routes) | **27/27** |
 | Live adapter checks against the real API | **10/10** (image generation proven; later runs hit the account's 4-hour image quota) |
 | DSH end-to-end, text | `dsh headless` with only this plugin mounted → model answer `PONG` |
 | DSH end-to-end, tools | agent created a file through the harness tool loop (tool-call → tool-result → final answer) |
@@ -219,7 +219,7 @@ harness web server on `127.0.0.1` and is not exposed elsewhere.
 
 ```powershell
 cd plugin
-node test/unit.mjs     # offline: 26 checks, no network, no Antigravity
+node test/unit.mjs     # offline: 27 checks, no network, no Antigravity
 node test/live.mjs     # live: 10 checks against the real API (spends the account quota)
 AG_IMAGE_TEST=1 node test/live.mjs   # additionally exercises the imageGen generator
 ```

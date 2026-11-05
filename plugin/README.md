@@ -80,7 +80,7 @@ a one-click imageGen smoke test.
 ## Tests
 
 ```powershell
-node test/unit.mjs     # offline, 26 checks (includes the GUI routes)
+node test/unit.mjs     # offline, 27 checks (includes the GUI routes)
 node test/live.mjs     # live, 10 checks, needs Antigravity installed and spends quota
 ```
 

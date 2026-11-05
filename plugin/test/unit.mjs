@@ -577,6 +577,42 @@ await checkAsync('media route serves only image files from the output directory'
   assert.equal(blocked.status, 404);
 });
 
+await checkAsync('config route edits features through the harness config editor', async () => {
+  const service = createStatusService({ client: statusStub(), adapter: statusStub(), config: guiConfig, log: () => {} });
+  const edits = [];
+  const configEditor = {
+    entries: () => [{ id: 'antigravity-llm' }],
+    edit: async (entry, change) => {
+      const next = change({ enabled: true, features: { googleSearch: false, imageGen: true } });
+      edits.push({ entry, next });
+    },
+  };
+  const routes = createStatusRoutes({
+    service, generator: {}, config: guiConfig, log: () => {},
+    getConfigEditor: () => configEditor,
+  });
+  const route = routes.find((item) => item.path === '/antigravity/config');
+  const ok = mockResponse();
+  await route.handler(mockPost('/antigravity/config', { features: { googleSearch: true, imageGen: false, defaultThinkingLevel: 'high' } }), ok);
+  assert.equal(ok.status, 200);
+  assert.equal(JSON.parse(ok.body).ok, true);
+  assert.equal(edits.length, 1);
+  assert.equal(edits[0].next.features.googleSearch, true);
+  assert.equal(edits[0].next.features.imageGen, false);
+  assert.equal(edits[0].next.features.defaultThinkingLevel, 'high');
+
+  const rejected = mockResponse();
+  await route.handler(mockPost('/antigravity/config', { features: { mediaOutputDir: 'C:/evil' } }), rejected);
+  assert.equal(rejected.status, 400);
+  assert.match(JSON.parse(rejected.body).error, /not editable/);
+
+  const noEditor = mockResponse();
+  const bare = createStatusRoutes({ service, generator: {}, config: guiConfig, log: () => {} })
+    .find((item) => item.path === '/antigravity/config');
+  await bare.handler(mockPost('/antigravity/config', { features: { imageGen: true } }), noEditor);
+  assert.equal(noEditor.status, 501);
+});
+
 await checkAsync('client bundle registers the settings section', async () => {
   const source = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8');
   let definition = null;

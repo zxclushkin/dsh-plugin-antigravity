@@ -195,8 +195,14 @@ export async function apply(ctx, config) {
   // Settings GUI: a JSON API on the harness web server (the Client half reads it).
   const statusService = createStatusService({ client, adapter, config, log });
   ctx.inject(['webServer'], (child) => {
-    child.effect(() => registerStatusRoutes(child, { service: statusService, generator, config, log }),
-      'antigravity: settings routes');
+    child.effect(() => registerStatusRoutes(child, {
+      service: statusService,
+      generator,
+      config,
+      log,
+      // Config edits go through the harness config editor, so the patch stays the source of truth.
+      getConfigEditor: () => ctx.get('configEditor'),
+    }), 'antigravity: settings routes');
     log('settings API registered on /antigravity/*');
   });
 

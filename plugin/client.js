@@ -139,18 +139,83 @@ window.__ModuleLoader__.load({
         image.length ? h('div', { style: { marginTop: '10px' } }, h('div', { style: S.label }, 'ImageGen'), image.map(row)) : null);
     }
 
-    function FeaturesSection(props) {
-      const features = props.features || {};
-      const keys = Object.keys(features).sort();
-      return h(Card, { title: 'Настройки плагина' },
-        keys.length === 0
-          ? h('div', { style: S.muted }, 'Особые возможности не включены — работают значения по умолчанию.')
-          : h('div', null, keys.map((key) => h('span', { key, style: S.chip }, key + ': ' + JSON.stringify(features[key])))),
-        h('div', { style: { ...S.muted, marginTop: '8px' } },
-          'Эти флаги правятся в $DSH_HOME/profiles/<profile>/cordis.patch.yml в блоке antigravity-llm (features.*); ',
-          'например: googleSearch: true, imageGen: false, mediaOutputDir. После правки перезапуск не нужен, если меняется только конфиг.'));
+function Toggle(props) {
+      return h('label', {
+        style: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '4px 0', fontSize: '12px', color: COLOR.text, cursor: 'pointer' },
+      },
+        h('input', { type: 'checkbox', checked: Boolean(props.checked), onChange: (event) => props.onChange(event.target.checked) }),
+        h('span', null, props.label));
     }
 
+    const THINKING_LEVELS = ['', 'low', 'medium', 'high'];
+    const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+
+    function FeaturesSection(props) {
+      const features = props.features || {};
+      const [draft, setDraft] = React.useState(Object.assign({}, features));
+      const [busy, setBusy] = React.useState(false);
+      const [message, setMessage] = React.useState(null);
+      const [error, setError] = React.useState(null);
+
+      React.useEffect(() => { setDraft(Object.assign({}, features)); }, [JSON.stringify(features)]);
+
+      const toggles = [
+        ['googleSearch', 'Google Search grounding (эндпоинт разрешает только на запросах без инструментов)'],
+        ['imageGen', 'Встроенный imageGen: инструмент image_generate для любой модели'],
+        ['imageOutput', 'Image-модель в списке моделей'],
+        ['includeThoughts', 'includeThoughts (эндпоинт его игнорирует)'],
+      ];
+
+      const save = React.useCallback(async () => {
+        setBusy(true); setError(null); setMessage(null);
+        try {
+          const payload = { features: {} };
+          for (const entry of toggles) payload.features[entry[0]] = Boolean(draft[entry[0]]);
+          if (draft.defaultThinkingLevel) payload.features.defaultThinkingLevel = draft.defaultThinkingLevel;
+          if (draft.imageAspectRatio) payload.features.imageAspectRatio = draft.imageAspectRatio;
+          const response = await fetch('/antigravity/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const json = await response.json();
+          if (!json.ok) throw new Error((json.error || 'не удалось сохранить'));
+          setMessage('Сохранено: ' + JSON.stringify(json.features));
+          if (props.onSaved) props.onSaved();
+        } catch (failure) {
+          setError(String(failure && failure.message ? failure.message : failure));
+        } finally {
+          setBusy(false);
+        }
+      }, [JSON.stringify(draft)]);
+
+      return h(Card, { title: 'Настройки плагина' },
+        toggles.map((entry) => h(Toggle, {
+          key: entry[0],
+          label: entry[1],
+          checked: Boolean(draft[entry[0]]),
+          onChange: (value) => setDraft(Object.assign({}, draft, { [entry[0]]: value })),
+        })),
+        h('div', { style: { ...S.row, marginTop: '10px', gap: '16px', flexWrap: 'wrap' } },
+          h('label', { style: { ...S.label, display: 'flex', alignItems: 'center', gap: '6px' } }, 'Thinking',
+            h('select', {
+              style: { ...S.input, flex: '0 0 auto' },
+              value: draft.defaultThinkingLevel || '',
+              onChange: (event) => setDraft(Object.assign({}, draft, { defaultThinkingLevel: event.target.value || undefined })),
+            }, THINKING_LEVELS.map((level) => h('option', { key: level || 'default', value: level }, level || 'по умолчанию')))),
+          h('label', { style: { ...S.label, display: 'flex', alignItems: 'center', gap: '6px' } }, 'Aspect',
+            h('select', {
+              style: { ...S.input, flex: '0 0 auto' },
+              value: draft.imageAspectRatio || '1:1',
+              onChange: (event) => setDraft(Object.assign({}, draft, { imageAspectRatio: event.target.value })),
+            }, ASPECT_RATIOS.map((ratio) => h('option', { key: ratio, value: ratio }, ratio)))),
+          h('button', { type: 'button', style: S.buttonPrimary, disabled: busy, onClick: save }, busy ? 'Сохранение…' : 'Сохранить')),
+        message ? h('div', { style: { ...S.muted, marginTop: '8px', color: COLOR.ok } }, message) : null,
+        error ? h('div', { style: { ...S.error, marginTop: '8px' } }, error) : null,
+        h('div', { style: { ...S.muted, marginTop: '8px' } },
+          'Флаги сохраняются в конфиг плагина (блок antigravity-llm в cordis.patch.yml) через config editor DSH и применяются без перезапуска. ',
+          'Пути (mediaOutputDir, debugDir), модели и креды по-прежнему задаются в patch-файле.'));
+    }
     function TestImageSection() {
       const [prompt, setPrompt] = React.useState('a small red circle on a plain white background');
       const [busy, setBusy] = React.useState(false);
@@ -228,7 +293,7 @@ window.__ModuleLoader__.load({
         }) : null,
         status.phase !== 'loading' ? h(QuotaSection, { quotas: data.quotas, error: data.quotasError }) : null,
         status.phase !== 'loading' ? h(ModelsSection, { models: data.models, error: data.modelsError }) : null,
-        status.phase !== 'loading' ? h(FeaturesSection, { features: data.features }) : null,
+        status.phase !== 'loading' ? h(FeaturesSection, { features: data.features, onSaved: () => status.reload(false) }) : null,
         h(TestImageSection));
     }
 

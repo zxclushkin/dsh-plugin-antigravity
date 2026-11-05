@@ -107,11 +107,34 @@ function safeMediaName(name) {
   return name;
 }
 
+/** Features the GUI may change live (everything else stays a profile-patch decision). */
+const EDITABLE_FEATURES = {
+  googleSearch: 'boolean',
+  includeThoughts: 'boolean',
+  imageGen: 'boolean',
+  imageOutput: 'boolean',
+  defaultThinkingLevel: 'string',
+  imageAspectRatio: 'string',
+};
+
+function validateFeaturePatch(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'features must be an object' };
+  const patch = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const type = EDITABLE_FEATURES[key];
+    if (type === undefined) return { error: 'feature "' + key + '" is not editable from the GUI' };
+    if (typeof value !== type) return { error: 'feature "' + key + '" must be a ' + type };
+    patch[key] = value;
+  }
+  if (Object.keys(patch).length === 0) return { error: 'no feature values supplied' };
+  return { patch };
+}
+
 /**
  * Routes for the settings GUI.
  * @returns {Array<{kind:'exact', path: string, method: string, handler: Function}>}
  */
-export function createStatusRoutes({ service, generator, config, log }) {
+export function createStatusRoutes({ service, generator, config, log, getConfigEditor, entryId = 'antigravity-llm' }) {
   const mediaDir = (config.features && config.features.mediaOutputDir) || null;
   return [
     {
@@ -125,6 +148,43 @@ export function createStatusRoutes({ service, generator, config, log }) {
           sendJson(res, 200, await service.snapshot({ refresh }));
         } catch (error) {
           log('status route failed: ' + (error && error.message ? error.message : error));
+          sendJson(res, 500, { ok: false, error: error && error.message ? error.message : String(error) });
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/antigravity/config',
+      method: 'POST',
+      async handler(req, res) {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: 'invalid request body: ' + error.message });
+        }
+        const validation = validateFeaturePatch(body.features);
+        if (validation.error) return sendJson(res, 400, { ok: false, error: validation.error });
+        const configEditor = typeof getConfigEditor === 'function' ? getConfigEditor() : undefined;
+        if (!configEditor) {
+          return sendJson(res, 501, { ok: false, error: 'the harness config editor is not available in this composition' });
+        }
+        try {
+          const entries = configEditor.entries();
+          const entry = entries.find((candidate) => candidate
+            && (candidate.id === entryId
+              || (candidate.options && candidate.options.id === entryId)
+              || (candidate.patch && candidate.patch.id === entryId)));
+          if (!entry) return sendJson(res, 404, { ok: false, error: 'plugin entry "' + entryId + '" not found' });
+          await configEditor.edit(entry, (current) => ({
+            ...(current || {}),
+            features: { ...((current && current.features) || {}), ...validation.patch },
+          }));
+          service.invalidate();
+          log('features updated from the settings GUI: ' + JSON.stringify(validation.patch));
+          sendJson(res, 200, { ok: true, features: validation.patch });
+        } catch (error) {
+          log('config route failed: ' + (error && error.message ? error.message : error));
           sendJson(res, 500, { ok: false, error: error && error.message ? error.message : String(error) });
         }
       },
