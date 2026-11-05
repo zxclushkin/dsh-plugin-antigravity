@@ -32,6 +32,27 @@ Unofficial client. Not affiliated with, endorsed by, or supported by Google or D
 > an account you are allowed to use this way, keep the request throttle at its defaults, and
 > expect to maintain it yourself. See [NOTICE](NOTICE).
 
+## VS Code extension
+
+The same models are available in VS Code chat through the
+[`LanguageModelChatProvider`](https://code.visualstudio.com/api/extension-guides/ai/language-model-chat-provider)
+API — see [`vscode/`](vscode/README.md). The extension reuses this repo's transport core
+(`plugin/src`: credentials, catalogue, request shaping, tool-call encoding, errors), so the
+two front-ends cannot drift apart, and `esbuild` bundles that core into the VSIX:
+
+```powershell
+cd vscode
+npm install
+npm run package
+code --install-extension antigravity-chat.vsix
+```
+
+Then open the model picker → **Manage Models…** → **Antigravity** → enable models. Verified
+inside a real VS Code 1.144.1 extension host: the provider registers, activates through
+`onLanguageModelChatProvider:antigravity`, and lists the account's 18 models (17 chat + 1
+image). Streaming, agent tool calls, image input and image-model output all run over the same
+endpoint as the DSH plugin.
+
 ## Status
 
 Verified live on Windows 11 against a real Antigravity installation and DSH 0.2.1-rc.5:
