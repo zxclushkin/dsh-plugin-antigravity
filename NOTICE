@@ -1,0 +1,19 @@
+dsh-plugin-antigravity
+======================
+
+Unofficial client. Not affiliated with, endorsed by, or supported by Google LLC or
+DeepSeek. Antigravity, Gemini and Google are trademarks of Google LLC; Claude is a
+trademark of Anthropic.
+
+The plugin reuses the operator's own Antigravity session on the operator's own machine:
+no credentials are bundled, proxied to third parties, or transmitted anywhere except to
+Google's own API endpoints. It speaks a private, undocumented API that may change at any
+time, and it consumes the operator's Antigravity quota/plan limits. Use it only with an
+account you are allowed to use this way.
+
+This repository contains no access tokens, refresh tokens or client secrets. The OAuth
+client id/secret used for the token exchange are discovered at runtime from the locally
+installed Antigravity binary; `docs/api.md` masks the secret.
+
+Third-party components: none. The plugin has no runtime dependencies outside the Node.js
+standard library (>= 20).

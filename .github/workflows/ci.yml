@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: unit (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Offline only: translation, tool-call ids, plugin contract. The live e2e test
+      # (plugin/test/gateway.mjs) needs a real Antigravity installation and its quota.
+      - run: node plugin/test/unit.mjs
+      - run: node --check plugin/index.mjs
+      - run: node --check plugin/src/antigravity.mjs
+      - run: node --check plugin/src/openai.mjs
+      - run: node --check plugin/src/server.mjs
+      - run: node --check tools/apply-profile.mjs
+      - run: node --check tools/catalogue.mjs
